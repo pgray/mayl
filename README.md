@@ -25,6 +25,7 @@ token authentication controls who can send.
          │  │  SQLite queue + archive          │  │
          │  └─────────────────────────────────┘  │
          │                                       │
+         │  runit (PID 1) supervises all services │
          └──────────────────────────────────────┘
               :8080              :6080
             HTTP API        VNC (browser)
@@ -33,6 +34,8 @@ token authentication controls who can send.
 A single container runs both **protonmail-bridge** and the **mayl** API.
 Bridge provides SMTP on localhost:1025; mayl connects to it directly. noVNC
 on port 6080 lets you log in to your Proton account through a browser.
+[runit](https://smarden.org/runit/) supervises all processes, handling signal
+forwarding, automatic restarts, and clean shutdown.
 
 ## Quickstart
 
@@ -200,14 +203,24 @@ All configuration is via environment variables. No config file.
 | `MAYL_DB_PATH` | `mayl.db` | SQLite database path |
 | `MAYL_DOMAINS` | (empty) | Comma-separated domains to seed on startup |
 
-## Background Workers
+## Process Supervision
 
-**Queue poller** -- Runs every `MAYL_QUEUE_POLL_SECONDS`. Picks up to 10
-pending emails, sends via SMTP, and moves to archive on success. On failure,
-reverts to pending with incremented attempt counter and recorded error.
+All processes are managed by [runit](https://smarden.org/runit/) (PID 1).
+Each service has a `run` script in `sv/` that gets symlinked to `/etc/service/`.
+runit automatically restarts any service that exits.
 
-**Archive culler** -- Runs every `MAYL_ARCHIVE_CULL_INTERVAL_SECONDS`. Deletes
-oldest rows when archive exceeds `MAYL_ARCHIVE_MAX_ROWS`.
+| Service      | Description |
+|--------------|-------------|
+| `xvfb`       | Virtual X display (:99) |
+| `fluxbox`    | Window manager |
+| `stalonetray`| System tray (for bridge icon) |
+| `x11vnc`     | VNC server on :5900 |
+| `websockify` | WebSocket proxy (noVNC on :6080) |
+| `bridge`     | protonmail-bridge with GUI |
+| `mayl`       | mayl HTTP API |
+
+The entrypoint script runs one-time init (GPG key, pass, D-Bus) then
+`exec runsvdir /etc/service` to hand off to runit.
 
 ## Ports
 
