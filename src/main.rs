@@ -16,7 +16,7 @@ use lettre::{
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use maud::{DOCTYPE, html};
 use tracing::{error, info, warn};
 
@@ -37,8 +37,6 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
 struct Config {
     smtp_host: String,
     smtp_port: u16,
-    smtp_user: String,
-    smtp_pass: String,
     server_host: String,
     server_port: u16,
     queue_poll_seconds: u64,
@@ -60,8 +58,6 @@ impl Config {
         Self {
             smtp_host: env_or("MAYL_SMTP_HOST", "localhost"),
             smtp_port: env_parse("MAYL_SMTP_PORT", 1025),
-            smtp_user: env_or("MAYL_SMTP_USER", ""),
-            smtp_pass: env_or("MAYL_SMTP_PASS", ""),
             server_host: env_or("MAYL_SERVER_HOST", "0.0.0.0"),
             server_port: env_parse("MAYL_SERVER_PORT", 8080),
             queue_poll_seconds: env_parse("MAYL_QUEUE_POLL_SECONDS", 5),
@@ -125,11 +121,29 @@ struct DomainListEntry {
     created_at: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct SmtpRequest {
+    user: String,
+    pass: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SmtpStatusResponse {
+    configured: bool,
+    user: String,
+}
+
 // ── App State ───────────────────────────────────────────────────────────────
+
+struct SmtpCredentials {
+    user: String,
+    pass: String,
+}
 
 struct AppState {
     db: Mutex<Connection>,
     config: Config,
+    smtp_creds: RwLock<SmtpCredentials>,
 }
 
 // ── Database ────────────────────────────────────────────────────────────────
@@ -162,6 +176,10 @@ fn init_db(conn: &Connection) {
             domain TEXT PRIMARY KEY,
             token TEXT NOT NULL UNIQUE,
             created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_queue_status ON email_queue(status);
         CREATE INDEX IF NOT EXISTS idx_archive_sent ON email_archive(id);
@@ -216,21 +234,26 @@ fn extract_domain_from_addr(from: &str) -> Option<String> {
 
 // ── SMTP ────────────────────────────────────────────────────────────────────
 
-fn build_mailer(config: &Config) -> AsyncSmtpTransport<Tokio1Executor> {
-    let tls_params = TlsParameters::builder(config.smtp_host.clone())
+fn build_mailer(
+    host: &str,
+    port: u16,
+    user: &str,
+    pass: &str,
+) -> AsyncSmtpTransport<Tokio1Executor> {
+    let tls_params = TlsParameters::builder(host.to_string())
         .dangerous_accept_invalid_certs(true)
         .build()
         .expect("failed to build TLS parameters");
 
     let mut builder =
-        AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_host)
-            .port(config.smtp_port)
+        AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
+            .port(port)
             .tls(Tls::Required(tls_params));
 
-    if !config.smtp_user.is_empty() {
+    if !user.is_empty() {
         builder = builder.credentials(Credentials::new(
-            config.smtp_user.clone(),
-            config.smtp_pass.clone(),
+            user.to_string(),
+            pass.to_string(),
         ));
     }
 
@@ -238,14 +261,21 @@ fn build_mailer(config: &Config) -> AsyncSmtpTransport<Tokio1Executor> {
 }
 
 async fn send_email(
-    config: &Config,
+    state: &AppState,
     from: &str,
     to: &[String],
     subject: &str,
     body: &str,
     html: Option<&str>,
 ) -> Result<(), String> {
-    let mailer = build_mailer(config);
+    let creds = state.smtp_creds.read().await;
+    let mailer = build_mailer(
+        &state.config.smtp_host,
+        state.config.smtp_port,
+        &creds.user,
+        &creds.pass,
+    );
+    drop(creds);
 
     let from_mbox: lettre::message::Mailbox = from.parse().map_err(|e| format!("bad from: {e}"))?;
 
@@ -322,6 +352,10 @@ async fn index_handler(State(state): State<Arc<AppState>>) -> maud::Markup {
 
     let smtp_host = &state.config.smtp_host;
     let smtp_port = state.config.smtp_port;
+    let (smtp_configured, smtp_user) = {
+        let creds = state.smtp_creds.read().await;
+        (!creds.user.is_empty(), creds.user.clone())
+    };
 
     html! {
         (DOCTYPE)
@@ -409,6 +443,11 @@ async fn index_handler(State(state): State<Arc<AppState>>) -> maud::Markup {
                     .card {
                         h2 { "SMTP" }
                         p.smtp-info { (smtp_host) ":" (smtp_port) }
+                        @if smtp_configured {
+                            p.smtp-info { "credentials: " (smtp_user) }
+                        } @else {
+                            p.empty { "no credentials configured" }
+                        }
                     }
 
                     .card {
@@ -420,6 +459,10 @@ async fn index_handler(State(state): State<Arc<AppState>>) -> maud::Markup {
                             dd { "List registered domains" }
                             dt { "DELETE /domains/:domain" }
                             dd { "Remove a domain" }
+                            dt { "GET /smtp" }
+                            dd { "SMTP credential status" }
+                            dt { "POST /smtp" }
+                            dd { "Set SMTP credentials" }
                             dt { "POST /email" }
                             dd { "Queue an email (Authorization: Bearer <token>)" }
                             dt { "POST /email?sync=true" }
@@ -541,6 +584,76 @@ async fn delete_domain_handler(
     }
 }
 
+// ── SMTP Config Handlers ────────────────────────────────────────────────────
+
+async fn get_smtp_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<SmtpStatusResponse> {
+    let creds = state.smtp_creds.read().await;
+    Json(SmtpStatusResponse {
+        configured: !creds.user.is_empty(),
+        user: creds.user.clone(),
+    })
+}
+
+async fn set_smtp_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SmtpRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
+    if payload.user.is_empty() || payload.pass.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "user and pass are required".into(),
+            }),
+        ));
+    }
+
+    // Persist to DB
+    {
+        let db = state.db.lock().await;
+        db.execute(
+            "INSERT INTO config (key, value) VALUES ('smtp_user', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [&payload.user],
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("db error: {e}"),
+                }),
+            )
+        })?;
+        db.execute(
+            "INSERT INTO config (key, value) VALUES ('smtp_pass', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [&payload.pass],
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("db error: {e}"),
+                }),
+            )
+        })?;
+    }
+
+    // Update in-memory credentials
+    {
+        let mut creds = state.smtp_creds.write().await;
+        creds.user = payload.user;
+        creds.pass = payload.pass;
+    }
+
+    info!("SMTP credentials updated");
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({"status": "ok"})),
+    ))
+}
+
 // ── Email Handler ───────────────────────────────────────────────────────────
 
 async fn email_handler(
@@ -613,7 +726,7 @@ async fn email_handler(
 
     if is_sync {
         if let Err(e) = send_email(
-            &state.config,
+            &state,
             &payload.from,
             &payload.to,
             &payload.subject,
@@ -730,7 +843,7 @@ async fn queue_worker(state: Arc<AppState>) {
             let to_addrs: Vec<String> = serde_json::from_str(to_json).unwrap_or_default();
 
             match send_email(
-                &state.config,
+                &state,
                 from,
                 &to_addrs,
                 subject,
@@ -821,11 +934,40 @@ async fn main() {
     init_db(&conn);
     seed_domains(&conn, &config.seed_domains);
 
+    // Load SMTP credentials: env vars first, then DB overrides
+    let mut smtp_user = env_or("MAYL_SMTP_USER", "");
+    let mut smtp_pass = env_or("MAYL_SMTP_PASS", "");
+
+    if let Ok(db_user) = conn.query_row(
+        "SELECT value FROM config WHERE key = 'smtp_user'",
+        [],
+        |r| r.get::<_, String>(0),
+    ) {
+        smtp_user = db_user;
+    }
+    if let Ok(db_pass) = conn.query_row(
+        "SELECT value FROM config WHERE key = 'smtp_pass'",
+        [],
+        |r| r.get::<_, String>(0),
+    ) {
+        smtp_pass = db_pass;
+    }
+
+    if !smtp_user.is_empty() {
+        info!(user = %smtp_user, "SMTP credentials loaded");
+    } else {
+        info!("no SMTP credentials configured (use POST /smtp to set)");
+    }
+
     let bind_addr = format!("{}:{}", config.server_host, config.server_port);
 
     let state = Arc::new(AppState {
         db: Mutex::new(conn),
         config,
+        smtp_creds: RwLock::new(SmtpCredentials {
+            user: smtp_user,
+            pass: smtp_pass,
+        }),
     });
 
     tokio::spawn(queue_worker(Arc::clone(&state)));
@@ -837,6 +979,8 @@ async fn main() {
         .route("/domains", post(create_domain_handler))
         .route("/domains", get(list_domains_handler))
         .route("/domains/{domain}", delete(delete_domain_handler))
+        .route("/smtp", get(get_smtp_handler))
+        .route("/smtp", post(set_smtp_handler))
         .route("/email", post(email_handler))
         .with_state(state);
 
@@ -865,12 +1009,12 @@ mod tests {
 
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('email_queue', 'email_archive', 'domains')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('email_queue', 'email_archive', 'domains', 'config')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 3);
+        assert_eq!(count, 4);
     }
 
     #[test]
