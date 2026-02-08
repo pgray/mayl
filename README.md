@@ -1,5 +1,7 @@
 # mayl
 
+![mayl dashboard](mayl.png)
+
 A self-hosted email-sending API backed by Protonmail Bridge, running in a single Docker container.
 
 Emails are submitted over a simple HTTP API and delivered via SMTP through
