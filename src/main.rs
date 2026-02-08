@@ -160,7 +160,8 @@ fn init_db(conn: &Connection) {
             html TEXT,
             created_at INTEGER NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
-            last_error TEXT
+            last_error TEXT,
+            save INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS email_archive (
             id INTEGER PRIMARY KEY,
@@ -750,9 +751,9 @@ async fn email_handler(
             let to_json = serde_json::to_string(&payload.to).unwrap();
             let db = state.db.lock().await;
             let _ = db.execute(
-                "INSERT INTO email_archive (id, queue_id, from_addr, to_addrs, subject, body, html, sent_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params![now, &id, &payload.from, &to_json, &payload.subject, &payload.body, &payload.html, now],
+                "INSERT INTO email_archive (queue_id, from_addr, to_addrs, subject, body, html, sent_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![&id, &payload.from, &to_json, &payload.subject, &payload.body, &payload.html, now],
             );
         }
 
@@ -767,12 +768,13 @@ async fn email_handler(
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_millis();
         let to_json = serde_json::to_string(&payload.to).unwrap();
+        let save_flag: i64 = if save { 1 } else { 0 };
 
         let db = state.db.lock().await;
         db.execute(
-            "INSERT INTO email_queue (id, status, from_addr, to_addrs, subject, body, html, created_at)
-             VALUES (?1, 'pending', ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![&id, &payload.from, &to_json, &payload.subject, &payload.body, &payload.html, now],
+            "INSERT INTO email_queue (id, status, from_addr, to_addrs, subject, body, html, created_at, save)
+             VALUES (?1, 'pending', ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![&id, &payload.from, &to_json, &payload.subject, &payload.body, &payload.html, now, save_flag],
         )
         .map_err(|e| {
             (
@@ -801,10 +803,10 @@ async fn queue_worker(state: Arc<AppState>) {
     loop {
         tokio::time::sleep(poll_interval).await;
 
-        let emails: Vec<(String, String, String, String, String, Option<String>)> = {
+        let emails: Vec<(String, String, String, String, String, Option<String>, bool)> = {
             let db = state.db.lock().await;
             let mut stmt = match db.prepare(
-                "SELECT id, from_addr, to_addrs, subject, body, html
+                "SELECT id, from_addr, to_addrs, subject, body, html, save
                  FROM email_queue WHERE status = 'pending' ORDER BY created_at LIMIT 10",
             ) {
                 Ok(s) => s,
@@ -814,7 +816,7 @@ async fn queue_worker(state: Arc<AppState>) {
                 }
             };
 
-            let rows: Vec<(String, String, String, String, String, Option<String>)> = stmt
+            let rows: Vec<(String, String, String, String, String, Option<String>, bool)> = stmt
                 .query_map([], |row| {
                     Ok((
                         row.get(0)?,
@@ -823,6 +825,7 @@ async fn queue_worker(state: Arc<AppState>) {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get::<_, i64>(6).map(|v| v != 0).unwrap_or(true),
                     ))
                 })
                 .ok()
@@ -839,7 +842,7 @@ async fn queue_worker(state: Arc<AppState>) {
             rows
         };
 
-        for (id, from, to_json, subject, body, html) in &emails {
+        for (id, from, to_json, subject, body, html, save) in &emails {
             let to_addrs: Vec<String> = serde_json::from_str(to_json).unwrap_or_default();
 
             match send_email(
@@ -855,12 +858,21 @@ async fn queue_worker(state: Arc<AppState>) {
                 Ok(()) => {
                     info!("sent queued email {id}");
                     let db = state.db.lock().await;
-                    let now = now_millis();
-                    let _ = db.execute(
-                        "INSERT INTO email_archive (id, queue_id, from_addr, to_addrs, subject, body, html, sent_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                        rusqlite::params![now, id, from, to_json, subject, body, html, now],
-                    );
+                    if *save {
+                        let now = now_millis();
+                        if let Err(e) = db.execute(
+                            "INSERT INTO email_archive (queue_id, from_addr, to_addrs, subject, body, html, sent_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            rusqlite::params![id, from, to_json, subject, body, html, now],
+                        ) {
+                            error!("archive insert failed for {id}: {e}, returning to pending");
+                            let _ = db.execute(
+                                "UPDATE email_queue SET status = 'pending' WHERE id = ?1",
+                                [id],
+                            );
+                            continue;
+                        }
+                    }
                     let _ = db.execute("DELETE FROM email_queue WHERE id = ?1", [id]);
                 }
                 Err(e) => {
@@ -933,6 +945,17 @@ async fn main() {
         .expect("failed to set pragmas");
     init_db(&conn);
     seed_domains(&conn, &config.seed_domains);
+
+    // Recover any emails stuck in 'sending' from a previous crash
+    let reset_count = conn
+        .execute(
+            "UPDATE email_queue SET status = 'pending' WHERE status = 'sending'",
+            [],
+        )
+        .unwrap_or(0);
+    if reset_count > 0 {
+        warn!(count = reset_count, "reset stale 'sending' rows to 'pending'");
+    }
 
     // Load SMTP credentials: env vars first, then DB overrides
     let mut smtp_user = env_or("MAYL_SMTP_USER", "");
@@ -1116,5 +1139,86 @@ mod tests {
     fn test_now_millis() {
         let ms = now_millis();
         assert!(ms > 1_700_000_000_000);
+    }
+
+    #[test]
+    fn test_archive_auto_id_no_collision() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn);
+
+        // Two rapid inserts without explicit id should get distinct rowids
+        conn.execute(
+            "INSERT INTO email_archive (queue_id, from_addr, to_addrs, subject, body, sent_at)
+             VALUES ('q1', 'a@b.com', '[]', 'sub1', 'body1', 1000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO email_archive (queue_id, from_addr, to_addrs, subject, body, sent_at)
+             VALUES ('q2', 'a@b.com', '[]', 'sub2', 'body2', 1000)",
+            [],
+        )
+        .unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM email_archive", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // Verify distinct ids
+        let mut stmt = conn
+            .prepare("SELECT id FROM email_archive ORDER BY id")
+            .unwrap();
+        let ids: Vec<i64> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn test_queue_save_flag_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn);
+
+        // Insert with save=0
+        conn.execute(
+            "INSERT INTO email_queue (id, status, from_addr, to_addrs, subject, body, created_at, save)
+             VALUES ('id1', 'pending', 'a@b.com', '[]', 'sub', 'body', 1000, 0)",
+            [],
+        )
+        .unwrap();
+
+        // Insert with save=1 (explicit)
+        conn.execute(
+            "INSERT INTO email_queue (id, status, from_addr, to_addrs, subject, body, created_at, save)
+             VALUES ('id2', 'pending', 'a@b.com', '[]', 'sub', 'body', 1001, 1)",
+            [],
+        )
+        .unwrap();
+
+        // Insert with default (should be 1)
+        conn.execute(
+            "INSERT INTO email_queue (id, status, from_addr, to_addrs, subject, body, created_at)
+             VALUES ('id3', 'pending', 'a@b.com', '[]', 'sub', 'body', 1002)",
+            [],
+        )
+        .unwrap();
+
+        let save1: i64 = conn
+            .query_row("SELECT save FROM email_queue WHERE id = 'id1'", [], |r| r.get(0))
+            .unwrap();
+        let save2: i64 = conn
+            .query_row("SELECT save FROM email_queue WHERE id = 'id2'", [], |r| r.get(0))
+            .unwrap();
+        let save3: i64 = conn
+            .query_row("SELECT save FROM email_queue WHERE id = 'id3'", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(save1, 0);
+        assert_eq!(save2, 1);
+        assert_eq!(save3, 1);
     }
 }
