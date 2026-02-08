@@ -1,0 +1,25 @@
+services:
+  mayl:
+    build: .
+    container_name: mayl
+    ports:
+      - "8080:8080"
+      - "6080:6080"
+    environment:
+      - MAYL_SMTP_HOST=localhost
+      - MAYL_SMTP_PORT=1025
+      - MAYL_DB_PATH=/data/mayl.db
+    volumes:
+      - bridge-config:/root/.config/protonmail
+      - bridge-data:/root/.local/share/protonmail
+      - bridge-gnupg:/root/.gnupg
+      - bridge-pass:/root/.password-store
+      - mayl-data:/data
+    restart: unless-stopped
+
+volumes:
+  bridge-config:
+  bridge-data:
+  bridge-gnupg:
+  bridge-pass:
+  mayl-data:

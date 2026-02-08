@@ -1,0 +1,11 @@
+#!/bin/sh
+while [ ! -e /tmp/.X99-lock ]; do sleep 0.2; done
+
+# Clean up stale lock files from previous runs
+rm -f /root/.cache/protonmail/bridge-v3/bridge-v3-gui.lock
+rm -f /root/.cache/protonmail/bridge-v3/bridge-v3.lock
+
+# Source dbus session address written by entrypoint
+[ -f /run/dbus-session-env ] && . /run/dbus-session-env
+
+exec protonmail-bridge

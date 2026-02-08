@@ -1,0 +1,4 @@
+#!/bin/sh
+# Wait for X
+while [ ! -e /tmp/.X99-lock ]; do sleep 0.2; done
+exec fluxbox

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>mayl - VNC</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0a; overflow: hidden; }
+#screen { width: 100vw; height: 100vh; }
+#status { position: fixed; top: 8px; left: 8px; color: #888; font: 12px monospace; z-index: 10; }
+</style>
+</head>
+<body>
+<div id="status">connecting...</div>
+<div id="screen"></div>
+<script type="module">
+import RFB from './core/rfb.js';
+const host = window.location.hostname;
+const port = window.location.port || 6080;
+const url = `ws://${host}:${port}/websockify`;
+const status = document.getElementById('status');
+const rfb = new RFB(document.getElementById('screen'), url, {});
+rfb.scaleViewport = true;
+rfb.resizeSession = false;
+rfb.addEventListener('connect', () => { status.textContent = ''; });
+rfb.addEventListener('disconnect', (e) => {
+    status.textContent = e.detail.clean ? 'disconnected' : 'connection lost';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+#!/bin/sh
+export MAYL_SMTP_HOST="${MAYL_SMTP_HOST:-localhost}"
+export MAYL_SMTP_PORT="${MAYL_SMTP_PORT:-1025}"
+export MAYL_DB_PATH="${MAYL_DB_PATH:-/data/mayl.db}"
+
+exec mayl

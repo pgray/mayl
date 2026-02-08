@@ -1,0 +1,3 @@
+#!/bin/sh
+while [ ! -e /tmp/.X99-lock ]; do sleep 0.2; done
+exec x11vnc -display :99 -forever -nopw -rfbport 5900 -shared

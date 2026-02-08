@@ -1,16 +1,227 @@
 # mayl
 
-protonmail email api via docker compose and tailscale
+A self-hosted email-sending API backed by Protonmail Bridge, running in a single Docker container.
 
-- per domain keys
-- queued mail in case of high load or sending
-  - 200/202 endpoints via query param?
-- simple json blob POST `$endpoint:8080/email`
-- configurable delays
-  - default per domain: 1s
+Emails are submitted over a simple HTTP API and delivered via SMTP through
+[protonmail-bridge](https://proton.me/mail/bridge). A SQLite-backed queue
+handles retries and an archive keeps a record of sent messages. Domain-based
+token authentication controls who can send.
 
-# mvp
+## Architecture
 
-- email api
-- docker-compose with combination debian protonmail bridge image
-- documented tailscale usage
+```
+         ┌──────────────────────────────────────┐
+         │           Docker container            │
+         │                                       │
+         │  ┌─────────────────────────────────┐  │
+         │  │  protonmail-bridge               │  │
+         │  │  localhost:1025 (SMTP)            │  │
+         │  │  Xvfb + Fluxbox + noVNC :6080    │  │
+         │  └──────────────┬──────────────────┘  │
+         │                 │ SMTP                 │
+         │  ┌──────────────▼──────────────────┐  │
+         │  │  mayl (Rust)                     │  │
+         │  │  :8080 HTTP API                  │  │
+         │  │  SQLite queue + archive          │  │
+         │  └─────────────────────────────────┘  │
+         │                                       │
+         └──────────────────────────────────────┘
+              :8080              :6080
+            HTTP API        VNC (browser)
+```
+
+A single container runs both **protonmail-bridge** and the **mayl** API.
+Bridge provides SMTP on localhost:1025; mayl connects to it directly. noVNC
+on port 6080 lets you log in to your Proton account through a browser.
+
+## Quickstart
+
+### 1. Start the container
+
+```bash
+docker compose up -d --build
+```
+
+### 2. Log in to Protonmail Bridge via VNC
+
+Open [http://localhost:6080](http://localhost:6080) in your browser. You will
+see a desktop with the Protonmail Bridge GUI. Sign in with your Proton account
+credentials and note the SMTP username and password that Bridge generates.
+
+### 3. Configure SMTP credentials
+
+Set the bridge-generated credentials as environment variables in
+`docker-compose.yml`:
+
+```yaml
+environment:
+  - MAYL_SMTP_USER=your-bridge-username
+  - MAYL_SMTP_PASS=your-bridge-password
+```
+
+Then restart:
+
+```bash
+docker compose up -d
+```
+
+### 4. Register a domain
+
+```bash
+curl -s -X POST http://localhost:8080/domains \
+  -H 'Content-Type: application/json' \
+  -d '{"domain": "yourdomain.com"}'
+```
+
+Response:
+
+```json
+{"domain": "yourdomain.com", "token": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"}
+```
+
+Save the token -- you'll use it as a Bearer token to send emails.
+
+### 5. Send an email
+
+Queue an email (async, returns `202 Accepted`):
+
+```bash
+curl -s -X POST http://localhost:8080/email \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_TOKEN' \
+  -d '{
+    "from": "you@yourdomain.com",
+    "to": ["recipient@example.com"],
+    "subject": "Hello from mayl",
+    "body": "Plain text body.",
+    "html": "<h1>Hello</h1><p>HTML body.</p>"
+  }'
+```
+
+Send immediately (sync, returns `200 OK`):
+
+```bash
+curl -s -X POST 'http://localhost:8080/email?sync=true' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_TOKEN' \
+  -d '{
+    "from": "you@yourdomain.com",
+    "to": ["recipient@example.com"],
+    "subject": "Sent immediately",
+    "body": "This was sent synchronously."
+  }'
+```
+
+## API Reference
+
+### `GET /`
+
+Web dashboard showing queue/archive stats, registered domains, SMTP info,
+and an inline domain creator form.
+
+### `POST /domains`
+
+Register a domain and receive an API token.
+
+**Request body:** `{"domain": "example.com"}`
+
+**Response (`201`):** `{"domain": "example.com", "token": "..."}`
+
+### `GET /domains`
+
+List all registered domains.
+
+**Response (`200`):** `[{"domain": "example.com", "created_at": 1234567890}]`
+
+### `DELETE /domains/{domain}`
+
+Remove a registered domain and its token.
+
+**Response:** `204 No Content` or `404 Not Found`
+
+### `POST /email`
+
+Send or queue an email. Requires `Authorization: Bearer <token>` header.
+The token must match the domain in the `from` address.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `sync`    | bool | `false` | `true` = send immediately; `false` = queue |
+| `save`    | bool | `true`  | `false` = skip archiving (only with `sync=true`) |
+
+**Request body (JSON):**
+
+| Field     | Type       | Required | Description |
+|-----------|------------|----------|-------------|
+| `from`    | string     | yes      | Sender (e.g. `"Ada <ada@example.com>"`) |
+| `to`      | string[]   | yes      | Recipient addresses |
+| `subject` | string     | yes      | Subject line |
+| `body`    | string     | yes      | Plain-text body |
+| `html`    | string     | no       | HTML body (sends multipart/alternative) |
+
+**Responses:**
+
+| Status | Meaning | Body |
+|--------|---------|------|
+| `200`  | Sent (sync) | `{"id": "...", "status": "sent"}` |
+| `202`  | Queued | `{"id": "...", "status": "queued"}` |
+| `400`  | Validation error | `{"error": "..."}` |
+| `401`  | Missing/invalid token | `{"error": "..."}` |
+| `403`  | Domain mismatch | `{"error": "..."}` |
+| `502`  | SMTP error (sync) | `{"error": "smtp error: ..."}` |
+
+### `GET /health`
+
+Returns queue and archive statistics.
+
+**Response (`200`):**
+
+```json
+{"status": "ok", "queue_size": 0, "archive_size": 1234}
+```
+
+## Configuration
+
+All configuration is via environment variables. No config file.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAYL_SMTP_HOST` | `localhost` | SMTP server hostname |
+| `MAYL_SMTP_PORT` | `1025` | SMTP server port |
+| `MAYL_SMTP_USER` | (empty) | SMTP username (from Bridge) |
+| `MAYL_SMTP_PASS` | (empty) | SMTP password (from Bridge) |
+| `MAYL_SERVER_HOST` | `0.0.0.0` | HTTP bind address |
+| `MAYL_SERVER_PORT` | `8080` | HTTP bind port |
+| `MAYL_QUEUE_POLL_SECONDS` | `5` | Seconds between queue polls |
+| `MAYL_ARCHIVE_MAX_ROWS` | `100000` | Max rows in archive before culling |
+| `MAYL_ARCHIVE_CULL_INTERVAL_SECONDS` | `600` | Seconds between archive trims |
+| `MAYL_DB_PATH` | `mayl.db` | SQLite database path |
+| `MAYL_DOMAINS` | (empty) | Comma-separated domains to seed on startup |
+
+## Background Workers
+
+**Queue poller** -- Runs every `MAYL_QUEUE_POLL_SECONDS`. Picks up to 10
+pending emails, sends via SMTP, and moves to archive on success. On failure,
+reverts to pending with incremented attempt counter and recorded error.
+
+**Archive culler** -- Runs every `MAYL_ARCHIVE_CULL_INTERVAL_SECONDS`. Deletes
+oldest rows when archive exceeds `MAYL_ARCHIVE_MAX_ROWS`.
+
+## Ports
+
+| Port   | Service          |
+|--------|------------------|
+| `8080` | mayl HTTP API    |
+| `6080` | noVNC (browser)  |
+
+## Volumes
+
+| Volume          | Mount point                     | Purpose |
+|-----------------|---------------------------------|---------|
+| `bridge-config` | `/root/.config/protonmail`      | Bridge config |
+| `bridge-data`   | `/root/.local/share/protonmail` | Bridge data |
+| `bridge-gnupg`  | `/root/.gnupg`                  | GPG keys |
+| `bridge-pass`   | `/root/.password-store`         | Credentials |
+| `mayl-data`     | `/data`                         | SQLite database |

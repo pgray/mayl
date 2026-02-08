@@ -1,0 +1,8 @@
+#!/bin/sh
+# Wait for VNC
+while ! bash -c 'echo > /dev/tcp/localhost/5900' 2>/dev/null; do sleep 0.5; done
+
+# noVNC has no index.html, create a redirect to vnc.html
+cp /novnc.html /usr/share/novnc/index.html
+
+exec websockify --web /usr/share/novnc 6080 localhost:5900
