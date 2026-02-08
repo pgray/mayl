@@ -55,19 +55,22 @@ credentials and note the SMTP username and password that Bridge generates.
 
 ### 3. Configure SMTP credentials
 
-Set the bridge-generated credentials as environment variables in
-`docker-compose.yml`:
-
-```yaml
-environment:
-  - MAYL_SMTP_USER=your-bridge-username
-  - MAYL_SMTP_PASS=your-bridge-password
-```
-
-Then restart:
+Pass the bridge-generated credentials to mayl via the API:
 
 ```bash
-docker compose up -d
+curl -s -X POST http://localhost:8080/smtp \
+  -H 'Content-Type: application/json' \
+  -d '{"user": "your-bridge-username", "pass": "your-bridge-password"}'
+```
+
+Credentials are persisted in SQLite and survive container restarts. You can
+also set them as environment variables (`MAYL_SMTP_USER`, `MAYL_SMTP_PASS`)
+but API-configured values take precedence.
+
+Verify the credentials are set:
+
+```bash
+curl -s http://localhost:8080/smtp
 ```
 
 ### 4. Register a domain
@@ -144,6 +147,24 @@ Remove a registered domain and its token.
 
 **Response:** `204 No Content` or `404 Not Found`
 
+### `GET /smtp`
+
+Returns whether SMTP credentials are configured (password is not exposed).
+
+**Response (`200`):**
+
+```json
+{"configured": true, "user": "bridge-user@proton.me"}
+```
+
+### `POST /smtp`
+
+Set or update SMTP credentials. Persisted to SQLite and applied immediately.
+
+**Request body:** `{"user": "...", "pass": "..."}`
+
+**Response (`200`):** `{"status": "ok"}`
+
 ### `POST /email`
 
 Send or queue an email. Requires `Authorization: Bearer <token>` header.
@@ -195,8 +216,8 @@ All configuration is via environment variables. No config file.
 |----------|---------|-------------|
 | `MAYL_SMTP_HOST` | `localhost` | SMTP server hostname |
 | `MAYL_SMTP_PORT` | `1025` | SMTP server port |
-| `MAYL_SMTP_USER` | (empty) | SMTP username (from Bridge) |
-| `MAYL_SMTP_PASS` | (empty) | SMTP password (from Bridge) |
+| `MAYL_SMTP_USER` | (empty) | SMTP username (from Bridge); overridden by `POST /smtp` |
+| `MAYL_SMTP_PASS` | (empty) | SMTP password (from Bridge); overridden by `POST /smtp` |
 | `MAYL_SERVER_HOST` | `0.0.0.0` | HTTP bind address |
 | `MAYL_SERVER_PORT` | `8080` | HTTP bind port |
 | `MAYL_QUEUE_POLL_SECONDS` | `5` | Seconds between queue polls |
