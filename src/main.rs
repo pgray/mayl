@@ -20,6 +20,8 @@ use tokio::sync::{Mutex, RwLock};
 use maud::{DOCTYPE, html};
 use tracing::{error, info, warn};
 
+type QueueRow = (String, String, String, String, String, Option<String>, bool);
+
 // ── Config ──────────────────────────────────────────────────────────────────
 
 fn env_or(key: &str, default: &str) -> String {
@@ -803,7 +805,7 @@ async fn queue_worker(state: Arc<AppState>) {
     loop {
         tokio::time::sleep(poll_interval).await;
 
-        let emails: Vec<(String, String, String, String, String, Option<String>, bool)> = {
+        let emails: Vec<QueueRow> = {
             let db = state.db.lock().await;
             let mut stmt = match db.prepare(
                 "SELECT id, from_addr, to_addrs, subject, body, html, save
@@ -816,7 +818,7 @@ async fn queue_worker(state: Arc<AppState>) {
                 }
             };
 
-            let rows: Vec<(String, String, String, String, String, Option<String>, bool)> = stmt
+            let rows: Vec<QueueRow> = stmt
                 .query_map([], |row| {
                     Ok((
                         row.get(0)?,
