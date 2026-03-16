@@ -4,7 +4,6 @@ services:
     container_name: mayl
     ports:
       - "8080:8080"
-      - "6080:6080"
     environment:
       - MAYL_SMTP_HOST=localhost
       - MAYL_SMTP_PORT=1025

@@ -18,7 +18,7 @@ token authentication controls who can send.
          │  ┌─────────────────────────────────┐  │
          │  │  protonmail-bridge               │  │
          │  │  localhost:1025 (SMTP)            │  │
-         │  │  Xvfb + Fluxbox + noVNC :6080    │  │
+         │  │  --noninteractive (headless)      │  │
          │  └──────────────┬──────────────────┘  │
          │                 │ SMTP                 │
          │  ┌──────────────▼──────────────────┐  │
@@ -29,13 +29,12 @@ token authentication controls who can send.
          │                                       │
          │  runit (PID 1) supervises all services │
          └──────────────────────────────────────┘
-              :8080              :6080
-            HTTP API        VNC (browser)
+                         :8080
+                       HTTP API
 ```
 
-A single container runs both **protonmail-bridge** and the **mayl** API.
-Bridge provides SMTP on localhost:1025; mayl connects to it directly. noVNC
-on port 6080 lets you log in to your Proton account through a browser.
+A single container runs both **protonmail-bridge** (headless) and the **mayl** API.
+Bridge provides SMTP on localhost:1025; mayl connects to it directly.
 [runit](https://smarden.org/runit/) supervises all processes, handling signal
 forwarding, automatic restarts, and clean shutdown.
 
@@ -47,11 +46,17 @@ forwarding, automatic restarts, and clean shutdown.
 docker compose up -d --build
 ```
 
-### 2. Log in to Protonmail Bridge via VNC
+### 2. Log in to Protonmail Bridge
 
-Open [http://localhost:6080](http://localhost:6080) in your browser. You will
-see a desktop with the Protonmail Bridge GUI. Sign in with your Proton account
-credentials and note the SMTP username and password that Bridge generates.
+Run the bridge CLI to log in to your Proton account:
+
+```bash
+docker exec -it mayl protonmail-bridge --cli
+```
+
+Use the `login` command to authenticate with your Proton credentials. Note the
+SMTP username and password that Bridge generates. This is a one-time step;
+credentials persist across container restarts via Docker volumes.
 
 ### 3. Configure SMTP credentials
 
@@ -234,12 +239,7 @@ runit automatically restarts any service that exits.
 
 | Service      | Description |
 |--------------|-------------|
-| `xvfb`       | Virtual X display (:99) |
-| `fluxbox`    | Window manager |
-| `stalonetray`| System tray (for bridge icon) |
-| `x11vnc`     | VNC server on :5900 |
-| `websockify` | WebSocket proxy (noVNC on :6080) |
-| `bridge`     | protonmail-bridge with GUI |
+| `bridge`     | protonmail-bridge (headless, `--noninteractive`) |
 | `mayl`       | mayl HTTP API |
 
 The entrypoint script runs one-time init (GPG key, pass, D-Bus) then
@@ -250,7 +250,6 @@ The entrypoint script runs one-time init (GPG key, pass, D-Bus) then
 | Port   | Service          |
 |--------|------------------|
 | `8080` | mayl HTTP API    |
-| `6080` | noVNC (browser)  |
 
 ## Volumes
 

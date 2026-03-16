@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-mayl is an email-sending HTTP API backed by protonmail-bridge, running in a single Docker container. The container runs both protonmail-bridge (SMTP on localhost:1025) and the mayl Rust API server (HTTP on port 8080). noVNC on port 6080 provides browser access to the bridge GUI for Proton account login. All processes are supervised by runit (PID 1).
+mayl is an email-sending HTTP API backed by protonmail-bridge, running in a single Docker container. The container runs both protonmail-bridge in headless/noninteractive mode (SMTP on localhost:1025) and the mayl Rust API server (HTTP on port 8080). All processes are supervised by runit (PID 1).
 
 Emails can be sent synchronously or queued for background delivery. All sent emails are optionally archived in SQLite with automatic old-row culling. Domain-based token authentication controls who can send.
 
@@ -42,14 +42,8 @@ Rust edition 2024 requires a recent stable toolchain.
 ├── Dockerfile           # Multi-stage: trixie runtime + rust builder + final
 ├── docker-compose.yml   # Single service, 5 volumes
 ├── entrypoint.sh        # One-time init (GPG, pass, dbus) then exec runsvdir
-├── novnc.html           # Minimal noVNC client page
 ├── sv/                  # runit service directories
-│   ├── xvfb/run         # Virtual X display
-│   ├── fluxbox/run      # Window manager
-│   ├── stalonetray/run  # System tray for bridge icon
-│   ├── x11vnc/run       # VNC server
-│   ├── websockify/run   # noVNC WebSocket proxy
-│   ├── bridge/run       # protonmail-bridge (with lock cleanup)
+│   ├── bridge/run       # protonmail-bridge --noninteractive (with lock cleanup)
 │   └── mayl/run         # mayl API server
 ├── src/
 │   └── main.rs          # Entire application (~970 lines)
@@ -106,7 +100,7 @@ Access serialized via `tokio::sync::Mutex<Connection>`.
 
 ## Process Supervision
 
-runit (`runsvdir`) runs as PID 1. The entrypoint does one-time setup (GPG key generation, pass init, D-Bus) then `exec runsvdir /etc/service`. Each service in `sv/` has a `run` script; runit auto-restarts any that exit. Services that depend on X wait for `/tmp/.X99-lock`. The bridge service cleans stale lock files before each start.
+runit (`runsvdir`) runs as PID 1. The entrypoint does one-time setup (GPG key generation, pass init, D-Bus) then `exec runsvdir /etc/service`. Each service in `sv/` has a `run` script; runit auto-restarts any that exit. The bridge service cleans stale lock files before each start. Initial Proton account login is done via `docker exec -it mayl protonmail-bridge --cli`.
 
 ## Key Design Decisions
 
@@ -117,7 +111,7 @@ runit (`runsvdir`) runs as PID 1. The entrypoint does one-time setup (GPG key ge
 - **`dangerous_accept_invalid_certs(true)`:** Bridge uses self-signed TLS. Must use `TlsParameters::builder().dangerous_accept_invalid_certs(true)` then `AsyncSmtpTransport::builder_dangerous()` with `Tls::Required(tls_params)`.
 - **Domain token auth:** `POST /domains` creates a domain + UUID token. `POST /email` validates the Bearer token matches the `from` domain.
 - **Background workers:** `queue_worker` and `archive_culler` run as `tokio::spawn` tasks.
-- **Custom noVNC page:** Minimal `novnc.html` using noVNC core `RFB` module directly (the packaged `vnc.html` UI is broken in trixie).
+- **Headless bridge:** Bridge runs with `--noninteractive`. Initial login via `docker exec -it mayl protonmail-bridge --cli`.
 
 ## Testing
 
@@ -142,6 +136,6 @@ All tests use in-memory SQLite. No SMTP or Docker required.
 - Rust 2024 edition: `std::env::remove_var` is unsafe. Tests avoid it.
 - maud 0.27 required for axum 0.8 compatibility (0.26 uses axum-core 0.4, needs 0.5).
 - Bridge Dockerfile: use `apt-get install -y /tmp/bridge.deb` (NOT `dpkg -i || apt-get -yf` which removes the package).
-- Bridge runs with GUI (no `--noninteractive`) so it's visible/usable in noVNC.
-- Stale X lock (`/tmp/.X99-lock`) and bridge locks must be cleaned on service start to survive container stop/start cycles.
-- Base image is `debian:trixie-slim` (not bookworm) because `stalonetray` and OpenGL libs needed by bridge-gui are only in trixie.
+- Bridge runs with `--noninteractive` (headless). Initial account login via `docker exec -it mayl protonmail-bridge --cli`.
+- Bridge lock files must be cleaned on service start to survive container stop/start cycles.
+- Base image is `debian:trixie-slim` (not bookworm) because OpenGL/Qt libs needed by bridge are only in trixie.
