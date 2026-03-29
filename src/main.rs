@@ -674,6 +674,43 @@ async fn send_email(
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
+const PAGE_CSS: &str = include_str!("../static/style.css");
+const DOMAINS_JS: &str = include_str!("../static/domains.js");
+
+fn page_shell(title: &str, active: &str, content: maud::Markup) -> maud::Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (title) }
+                link rel="preconnect" href="https://fonts.googleapis.com";
+                link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous";
+                link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet";
+                style { (maud::PreEscaped(PAGE_CSS)) }
+            }
+            body {
+                header {
+                    a.site-name href="/" { "mayl" }
+                    .nav-links {
+                        a href="/" class:active[active == "/"] { "home" }
+                        a href="/health.html" class:active[active == "/health.html"] { "health" }
+                        a href="/bridge.html" class:active[active == "/bridge.html"] { "bridge" }
+                    }
+                }
+                .site {
+                    (content)
+                }
+                footer {
+                    p { "mayl" }
+                    a href="https://neutral.engineering" { mark { "neutral.engineering" } }
+                }
+            }
+        }
+    }
+}
+
 async fn index_handler(State(state): State<Arc<AppState>>) -> maud::Markup {
     let (queue_size, archive_size, failed_count, domains) = {
         let db = state.db.lock().await;
@@ -710,124 +747,255 @@ async fn index_handler(State(state): State<Arc<AppState>>) -> maud::Markup {
         (!creds.user.is_empty(), creds.user.clone())
     };
 
-    html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { "mayl" }
-                style {
-                    (maud::PreEscaped("
-                        * { margin: 0; padding: 0; box-sizing: border-box; }
-                        body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 2rem; }
-                        .container { max-width: 640px; margin: 0 auto; }
-                        h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #fff; }
-                        .subtitle { color: #888; margin-bottom: 2rem; }
-                        .card { background: #161616; border: 1px solid #2a2a2a; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
-                        .card h2 { font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 0.75rem; }
-                        .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
-                        .stat .value { font-size: 1.5rem; font-weight: 600; color: #fff; }
-                        .stat .label { font-size: 0.75rem; color: #888; }
-                        .domain-list { list-style: none; }
-                        .domain-list li { padding: 0.375rem 0; border-bottom: 1px solid #2a2a2a; font-family: monospace; font-size: 0.875rem; }
-                        .domain-list li:last-child { border-bottom: none; }
-                        .empty { color: #555; font-style: italic; font-size: 0.875rem; }
-                        .smtp-info { font-family: monospace; font-size: 0.875rem; color: #aaa; }
-                        .routes { font-family: monospace; font-size: 0.875rem; }
-                        .routes dt { color: #6cb6ff; }
-                        .routes dd { color: #888; margin-bottom: 0.5rem; margin-left: 1rem; }
-                        .add-domain { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
-                        .add-domain input { flex: 1; padding: 0.375rem 0.5rem; background: #0a0a0a; border: 1px solid #333; border-radius: 4px; color: #e0e0e0; font-family: monospace; font-size: 0.875rem; }
-                        .add-domain button { padding: 0.375rem 0.75rem; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; cursor: pointer; font-size: 0.875rem; }
-                        .add-domain button:hover { background: #333; }
-                        #domain-result { margin-top: 0.5rem; font-family: monospace; font-size: 0.8rem; word-break: break-all; }
-                        #domain-result.ok { color: #4ec970; }
-                        #domain-result.err { color: #f85149; }
-                    "))
+    page_shell("mayl", "/", html! {
+        h1 { mark { "mayl" } }
+
+        .section {
+            h2 { "Status" }
+            .stat-grid {
+                .stat {
+                    .value { (queue_size) }
+                    .label { "queued" }
+                }
+                .stat {
+                    .value { (archive_size) }
+                    .label { "sent" }
+                }
+                .stat {
+                    .value { (failed_count) }
+                    .label { "retrying" }
                 }
             }
-            body {
-                .container {
-                    h1 { "mayl" }
-                    p.subtitle { "email sending API" }
+        }
 
-                    .card {
-                        h2 { "Status" }
-                        .stat-grid {
-                            .stat {
-                                .value { (queue_size) }
-                                .label { "queued" }
-                            }
-                            .stat {
-                                .value { (archive_size) }
-                                .label { "sent" }
-                            }
-                            .stat {
-                                .value { (failed_count) }
-                                .label { "retrying" }
-                            }
-                        }
+        .section {
+            h2 { "Domains" }
+            @if domains.is_empty() {
+                p.empty { "no domains configured" }
+            } @else {
+                ul.domain-list {
+                    @for domain in &domains {
+                        li { (domain) }
                     }
+                }
+            }
+            form.add-domain onsubmit="return addDomain(event)" {
+                input type="text" id="domain-input" placeholder="example.com" required;
+                button type="submit" { "Add" }
+            }
+            div id="domain-result" {}
+            script { (maud::PreEscaped(DOMAINS_JS)) }
+        }
 
-                    .card {
-                        h2 { "Domains" }
-                        @if domains.is_empty() {
-                            p.empty { "No domains configured" }
-                        } @else {
-                            ul.domain-list {
-                                @for domain in &domains {
-                                    li { (domain) }
-                                }
+        .section {
+            h2 { "SMTP" }
+            p.info { (smtp_host) ":" (smtp_port) }
+            @if smtp_configured {
+                p.info { "credentials: " (smtp_user) }
+            } @else {
+                p.empty { "no credentials configured" }
+            }
+        }
+
+        .section {
+            h2 { "API" }
+            dl.routes {
+                dt { (maud::PreEscaped("<mark>POST</mark> /domains")) }
+                dd { "register a domain, get a token" }
+                dt { (maud::PreEscaped("<mark>GET</mark> /domains")) }
+                dd { "list registered domains" }
+                dt { (maud::PreEscaped("<mark>DELETE</mark> /domains/:domain")) }
+                dd { "remove a domain" }
+                dt { (maud::PreEscaped("<mark>POST</mark> /bridge/unlock")) }
+                dd { "login to proton bridge" }
+                dt { (maud::PreEscaped("<mark>GET</mark> /bridge/status")) }
+                dd { "bridge connection status" }
+                dt { (maud::PreEscaped("<mark>POST</mark> /email")) }
+                dd { "queue an email (Authorization: Bearer <token>)" }
+                dt { (maud::PreEscaped("<mark>POST</mark> /email?sync=true")) }
+                dd { "send immediately" }
+                dt { (maud::PreEscaped("<mark>GET</mark> /health")) }
+                dd { "queue and archive stats" }
+            }
+        }
+    })
+}
+
+async fn health_page_handler(State(state): State<Arc<AppState>>) -> maud::Markup {
+    let db = state.db.lock().await;
+
+    let queue_size: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM email_queue WHERE status IN ('pending', 'sending')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let archive_size: i64 = db
+        .query_row("SELECT COUNT(*) FROM email_archive", [], |r| r.get(0))
+        .unwrap_or(0);
+    let failed_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM email_queue WHERE attempts > 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let oldest_pending: Option<i64> = db
+        .query_row(
+            "SELECT MIN(created_at) FROM email_queue WHERE status = 'pending'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(None);
+    drop(db);
+
+    let smtp_configured = {
+        let creds = state.smtp_creds.read().await;
+        !creds.user.is_empty()
+    };
+
+    page_shell("health — mayl", "/health.html", html! {
+        h1 { "health" }
+
+        .section {
+            h2 { "Queue" }
+            .stat-grid {
+                .stat {
+                    .value { (queue_size) }
+                    .label { "pending" }
+                }
+                .stat {
+                    .value { (failed_count) }
+                    .label { "retrying" }
+                }
+                .stat {
+                    .value { (archive_size) }
+                    .label { "sent total" }
+                }
+            }
+            @if let Some(ts) = oldest_pending {
+                p.info style="margin-top: 0.75rem" {
+                    "oldest pending: " (ts)
+                }
+            }
+        }
+
+        .section {
+            h2 { "SMTP" }
+            @if smtp_configured {
+                p.info { "status: " span.badge.ok { "connected" } }
+            } @else {
+                p.info { "status: " span.badge.warn { "no credentials" } }
+            }
+            p.info { "host: " (state.config.smtp_host) ":" (state.config.smtp_port) }
+        }
+
+        .section {
+            h2 { "Config" }
+            p.info { "queue poll: " (state.config.queue_poll_seconds) "s" }
+            p.info { "archive max rows: " (state.config.archive_max_rows) }
+            p.info { "cull interval: " (state.config.archive_cull_interval_seconds) "s" }
+        }
+    })
+}
+
+async fn bridge_page_handler(State(state): State<Arc<AppState>>) -> maud::Markup {
+    let bridge = state.bridge.as_ref();
+
+    if bridge.is_none() {
+        return page_shell("bridge — mayl", "/bridge.html", html! {
+            h1 { "bridge" }
+            .section {
+                p.info { "status: " span.badge.warn { "not configured" } }
+                p.info style="margin-top: 0.5rem" {
+                    "set " mark { "MAYL_BRIDGE_CONFIG_DIR" } " to enable"
+                }
+            }
+        });
+    }
+
+    let bridge = bridge.unwrap();
+    let token = &bridge.token;
+    let mut client = bridge.client.lock().await;
+
+    let version = client
+        .version(bridge_request(token, ()))
+        .await
+        .map(|r| r.into_inner())
+        .unwrap_or_else(|_| "unknown".into());
+
+    let users: Vec<(String, String, i32, Vec<String>)> = client
+        .get_user_list(bridge_request(token, ()))
+        .await
+        .map(|r| {
+            r.into_inner()
+                .users
+                .into_iter()
+                .map(|u| (u.id, u.username, u.state, u.addresses))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let settings = client
+        .mail_server_settings(bridge_request(token, ()))
+        .await
+        .ok();
+
+    drop(client);
+
+    let smtp_user = {
+        let creds = state.smtp_creds.read().await;
+        creds.user.clone()
+    };
+
+    page_shell("bridge — mayl", "/bridge.html", html! {
+        h1 { "bridge" }
+
+        .section {
+            h2 { "Connection" }
+            p.info { "status: " span.badge.ok { "connected" } }
+            p.info { "version: " (version) }
+        }
+
+        .section {
+            h2 { "Users" }
+            @if users.is_empty() {
+                p.empty { "no users logged in" }
+            } @else {
+                @for (id, username, user_state, addresses) in &users {
+                    .user-card {
+                        p {
+                            span.username { (username) }
+                            " "
+                            @match *user_state {
+                                2 => { span.badge.ok { "connected" } },
+                                1 => { span.badge.warn { "locked" } },
+                                _ => { span.badge.err { "signed out" } },
                             }
                         }
-                        form.add-domain onsubmit="return addDomain(event)" {
-                            input type="text" id="domain-input" placeholder="example.com" required;
-                            button type="submit" { "Add" }
-                        }
-                        div id="domain-result" {}
-                        script {
-                            (maud::PreEscaped("
-                                async function addDomain(e){e.preventDefault();const r=document.getElementById('domain-result'),i=document.getElementById('domain-input');r.className='';r.textContent='';try{const res=await fetch('/domains',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:i.value})});const d=await res.json();if(res.ok){r.className='ok';r.textContent='Token: '+d.token;i.value='';location.reload()}else{r.className='err';r.textContent=d.error}}catch(ex){r.className='err';r.textContent=ex.message}}
-                            "))
-                        }
-                    }
-
-                    .card {
-                        h2 { "SMTP" }
-                        p.smtp-info { (smtp_host) ":" (smtp_port) }
-                        @if smtp_configured {
-                            p.smtp-info { "credentials: " (smtp_user) }
-                        } @else {
-                            p.empty { "no credentials configured" }
-                        }
-                    }
-
-                    .card {
-                        h2 { "API" }
-                        dl.routes {
-                            dt { "POST /domains" }
-                            dd { "Register a domain, get a token" }
-                            dt { "GET /domains" }
-                            dd { "List registered domains" }
-                            dt { "DELETE /domains/:domain" }
-                            dd { "Remove a domain" }
-                            dt { "GET /smtp" }
-                            dd { "SMTP credential status" }
-                            dt { "POST /smtp" }
-                            dd { "Set SMTP credentials" }
-                            dt { "POST /email" }
-                            dd { "Queue an email (Authorization: Bearer <token>)" }
-                            dt { "POST /email?sync=true" }
-                            dd { "Send immediately" }
-                            dt { "GET /health" }
-                            dd { "Queue and archive stats (JSON)" }
+                        p.addresses { "id: " (id) }
+                        @for addr in addresses {
+                            p.addresses { (addr) }
                         }
                     }
                 }
             }
         }
-    }
+
+        .section {
+            h2 { "Mail Server" }
+            @if let Some(ref s) = settings {
+                p.info { "SMTP: " (s.get_ref().smtp_port) (if s.get_ref().use_ssl_for_smtp { " (SSL)" } else { "" }) }
+                p.info { "IMAP: " (s.get_ref().imap_port) (if s.get_ref().use_ssl_for_imap { " (SSL)" } else { "" }) }
+            } @else {
+                p.empty { "unavailable" }
+            }
+            @if !smtp_user.is_empty() {
+                p.info { "SMTP user: " (smtp_user) }
+            }
+        }
+    })
 }
 
 async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -1677,6 +1845,8 @@ async fn main() {
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/health", get(health_handler))
+        .route("/health.html", get(health_page_handler))
+        .route("/bridge.html", get(bridge_page_handler))
         .route("/domains", post(create_domain_handler))
         .route("/domains", get(list_domains_handler))
         .route("/domains/{domain}", delete(delete_domain_handler))
