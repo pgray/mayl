@@ -43,12 +43,16 @@ Rust edition 2024 requires a recent stable toolchain.
 ├── build.rs             # tonic-build proto compilation
 ├── proto/
 │   └── bridge.proto     # Proton Bridge gRPC service definition
+├── static/
+│   ├── style.css        # Page styles (embedded via include_str!)
+│   └── domains.js       # Domain add form + token modal
 ├── Dockerfile           # Multi-stage: trixie runtime + rust builder + final
 ├── docker-compose.yml   # Single service, 5 volumes
-├── entrypoint.sh        # One-time init (GPG, pass, dbus) then exec runsvdir
+├── entrypoint.sh        # One-time init (GPG, pass, dbus, gnome-keyring)
 ├── sv/                  # runit service directories
-│   ├── bridge/run       # protonmail-bridge --grpc (with lock cleanup)
+│   ├── bridge/run       # bridge backend --grpc (with lock cleanup)
 │   └── mayl/run         # mayl API server
+├── tools/               # Shell helper scripts (unlock, send, etc.)
 ├── src/
 │   └── main.rs          # Entire application
 ├── .github/
@@ -59,7 +63,7 @@ Rust edition 2024 requires a recent stable toolchain.
 └── README.md
 ```
 
-All application logic lives in `src/main.rs`.
+All application logic lives in `src/main.rs`. Static assets in `static/` are embedded at compile time via `include_str!`.
 
 ## Configuration
 
@@ -82,11 +86,12 @@ All application logic lives in `src/main.rs`.
 
 ## Database
 
-SQLite with WAL mode and 5000ms busy timeout. Three tables:
+SQLite with WAL mode and 5000ms busy timeout. Four tables:
 
 - `email_queue` -- pending/sending emails
-- `email_archive` -- sent emails (PK = unix millis)
+- `email_archive` -- sent emails
 - `domains` -- registered domains with tokens
+- `config` -- persistent key/value config (SMTP credentials)
 
 Access serialized via `tokio::sync::Mutex<Connection>`.
 
@@ -94,14 +99,18 @@ Access serialized via `tokio::sync::Mutex<Connection>`.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `GET` | `/` | No | maud HTML dashboard |
+| `GET` | `/` | No | HTML dashboard |
 | `GET` | `/health` | No | JSON stats |
+| `GET` | `/health.html` | No | Health page |
+| `GET` | `/bridge.html` | No | Bridge status page |
+| `POST` | `/bridge/unlock` | Headers | Login to Proton bridge |
+| `GET` | `/bridge/status` | No | Bridge status (JSON) |
 | `POST` | `/domains` | No | Register domain, get token |
 | `GET` | `/domains` | No | List domains |
 | `DELETE` | `/domains/{domain}` | No | Remove domain |
+| `GET` | `/smtp` | No | SMTP credential status |
+| `POST` | `/smtp` | No | Set SMTP credentials |
 | `POST` | `/email` | Bearer token | Send/queue email |
-| `POST` | `/bridge/unlock` | Headers + JSON | Login to Proton bridge |
-| `GET` | `/bridge/status` | No | Bridge connection + user status |
 
 `POST /email` requires `Authorization: Bearer <token>` matching the `from` address domain.
 
@@ -111,14 +120,14 @@ runit (`runsvdir`) runs as PID 1. The entrypoint does one-time setup (GPG key ge
 
 ## Key Design Decisions
 
-- **Single-file app:** All logic in `src/main.rs`.
+- **Single-file app:** All logic in `src/main.rs`. Static assets embedded via `include_str!` from `static/`.
 - **Env vars only:** No config files, no toml crate.
 - **Single container:** Bridge and API in one container, SMTP via localhost.
 - **runit for PID 1:** Proper signal handling, auto-restart, clean stop/start cycles.
 - **`dangerous_accept_invalid_certs(true)`:** Bridge uses self-signed TLS. Must use `TlsParameters::builder().dangerous_accept_invalid_certs(true)` then `AsyncSmtpTransport::builder_dangerous()` with `Tls::Required(tls_params)`.
 - **Domain token auth:** `POST /domains` creates a domain + UUID token. `POST /email` validates the Bearer token matches the `from` domain.
 - **Background workers:** `queue_worker`, `archive_culler`, and `bridge_event_worker` run as `tokio::spawn` tasks.
-- **Bridge gRPC integration:** Bridge runs with `--grpc`. mayl connects via Unix socket + TLS, reads `grpcServerConfig.json` for socket path/cert/token. Login via `POST /bridge/unlock`, SMTP credentials auto-harvested from bridge after login.
+- **Bridge gRPC integration:** Bridge backend runs directly (`/usr/lib/protonmail/bridge/bridge --grpc --parent-pid -1`). mayl connects via Unix socket + TLS (no cert verification), reads `grpcServerConfig.json` for socket path/token. Login via `POST /bridge/unlock`, SMTP credentials auto-harvested from bridge after login. Connection retries handle stale config from previous runs.
 - **Bridge event stream:** Background task listens to `RunEventStream()` for login events, user changes. Must stay alive — bridge quits if client disconnects.
 
 ## Testing

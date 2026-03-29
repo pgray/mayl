@@ -12,10 +12,8 @@ async function addDomain(e) {
     });
     const d = await res.json();
     if (res.ok) {
-      r.className = 'ok';
-      r.textContent = 'Token: ' + d.token;
       i.value = '';
-      location.reload();
+      showTokenModal(d.domain, d.token);
     } else {
       r.className = 'err';
       r.textContent = d.error;
@@ -24,4 +22,22 @@ async function addDomain(e) {
     r.className = 'err';
     r.textContent = ex.message;
   }
+}
+
+function showTokenModal(domain, token) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<h3>' + domain + '</h3>' +
+      '<p class="modal-token">' + token + '</p>' +
+      '<p class="modal-hint">copy this token — it won\'t be shown again</p>' +
+      '<button onclick="this.closest(\'.modal-overlay\').remove();location.reload()">dismiss</button>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  // select the token text for easy copying
+  const range = document.createRange();
+  range.selectNodeContents(overlay.querySelector('.modal-token'));
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
 }

@@ -51,6 +51,7 @@ COPY Cargo.toml Cargo.lock* ./
 COPY build.rs ./
 COPY proto ./proto
 COPY src ./src
+COPY static ./static
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
