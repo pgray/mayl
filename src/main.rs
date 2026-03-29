@@ -302,7 +302,7 @@ async fn connect_bridge(config_dir: &str) -> Result<(BridgeClient, String), Stri
                 async move {
                     let stream = tokio::net::UnixStream::connect(path).await?;
                     let server_name = rustls::pki_types::ServerName::try_from("127.0.0.1")
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                        .map_err(std::io::Error::other)?;
                     let tls_stream = tls.connect(server_name, stream).await?;
                     Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(tls_stream))
                 }
