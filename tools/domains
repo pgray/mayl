@@ -1,4 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # List all registered domains
-curl -s http://localhost:8080/domains | python3 -m json.tool 2>/dev/null || cat
+set -e
+
+export MAYL_ADDR=${MAYL_ADDR:-localhost}
+export MAYL_PORT=${MAYL_PORT:-8080}
+
+curl -s http://${MAYL_ADDR}:${MAYL_PORT}/domains | python3 -m json.tool 2>/dev/null || cat
 echo

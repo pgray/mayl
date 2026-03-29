@@ -1,5 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
+
+export MAYL_ADDR=${MAYL_ADDR:-localhost}
+export MAYL_PORT=${MAYL_PORT:-8080}
 
 rp="read -rsp"
 [ "$DEBUG" = "true" ] && rp="read -rp"
@@ -16,5 +19,5 @@ headers=(
   -H "BRIDGE-TOTP: $totp"
 )
 
-curl -s -X POST http://localhost:8080/bridge/unlock "${headers[@]}" | python3 -m json.tool 2>/dev/null || cat
+curl -s -X POST http://${MAYL_ADDR}:${MAYL_PORT}/bridge/unlock "${headers[@]}" | python3 -m json.tool 2>/dev/null || cat
 echo

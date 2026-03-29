@@ -1,4 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Show queue and archive stats
-curl -s http://localhost:8080/health | python3 -m json.tool 2>/dev/null || cat
+set -e
+
+export MAYL_ADDR=${MAYL_ADDR:-localhost}
+export MAYL_PORT=${MAYL_PORT:-8080}
+
+curl -s http://${MAYL_ADDR}:${MAYL_PORT}/health | python3 -m json.tool 2>/dev/null || cat
 echo

@@ -1,7 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Send a test email
 # Usage: ./tools/send
 set -e
+
+export MAYL_ADDR=${MAYL_ADDR:-localhost}
+export MAYL_PORT=${MAYL_PORT:-8080}
 
 read -rp "Token: " token
 read -rp "From: " from
@@ -9,7 +12,7 @@ read -rp "To: " to
 read -rp "Subject: " subject
 read -rp "Body: " body
 
-curl -s -X POST "http://localhost:8080/email?sync=true" \
+curl -s -X POST "http://${MAYL_ADDR}:${MAYL_PORT}/email?sync=true" \
   -H "Authorization: Bearer $token" \
   -H "Content-Type: application/json" \
   -d "$(printf '{"from":"%s","to":["%s"],"subject":"%s","body":"%s"}' "$from" "$to" "$subject" "$body")" \
