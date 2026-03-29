@@ -11,14 +11,7 @@ RUN apt-get update && apt-get install -y \
     pass \
     dbus \
     dbus-x11 \
-    xvfb \
-    x11vnc \
-    fluxbox \
-    stalonetray \
-    novnc \
-    websockify \
     gnome-keyring \
-    python3-gi \
     gir1.2-secret-1 \
     libegl1 \
     libgl1 \
@@ -51,35 +44,32 @@ RUN curl -sL https://proton.me/download/bridge/protonmail-bridge_3.16.0-1_amd64.
 
 FROM rust:1-slim-trixie AS builder
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
+COPY build.rs ./
+COPY proto ./proto
 COPY src ./src
+COPY static ./static
 
-RUN cargo build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release && cp target/release/mayl /usr/local/bin/mayl
 
 # ── Stage 3: Final image ─────────────────────────────────────────────────────
 
 FROM runtime
 
-COPY --from=builder /app/target/release/mayl /usr/local/bin/mayl
+COPY --from=builder /usr/local/bin/mayl /usr/local/bin/mayl
 COPY entrypoint.sh /entrypoint.sh
-COPY novnc.html /novnc.html
 COPY sv/ /etc/sv/
 RUN chmod +x /entrypoint.sh \
     && chmod +x /etc/sv/*/run \
-    && ln -s /etc/sv/xvfb /etc/service/xvfb \
-    && ln -s /etc/sv/fluxbox /etc/service/fluxbox \
-    && ln -s /etc/sv/stalonetray /etc/service/stalonetray \
-    && ln -s /etc/sv/x11vnc /etc/service/x11vnc \
-    && ln -s /etc/sv/websockify /etc/service/websockify \
     && ln -s /etc/sv/bridge /etc/service/bridge \
     && ln -s /etc/sv/mayl /etc/service/mayl
 
-ENV DISPLAY=:99
-
-EXPOSE 6080 8080
+EXPOSE 8080
 
 VOLUME ["/root/.config/protonmail", "/root/.local/share/protonmail", "/root/.gnupg", "/root/.password-store", "/data"]
 

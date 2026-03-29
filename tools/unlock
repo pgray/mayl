@@ -1,0 +1,20 @@
+#!/bin/bash
+set -e
+
+rp="read -rsp"
+[ "$DEBUG" = "true" ] && rp="read -rp"
+
+read -rp "Username: " username
+$rp "Login password: " login_pw; echo
+$rp "Mailbox password: " unlock_pw; echo
+read -rp "TOTP: " totp
+
+headers=(
+  -H "BRIDGE-USERNAME: $username"
+  -H "BRIDGE-LOGIN-PW: $login_pw"
+  -H "BRIDGE-UNLOCK-PW: $unlock_pw"
+  -H "BRIDGE-TOTP: $totp"
+)
+
+curl -s -X POST http://localhost:8080/bridge/unlock "${headers[@]}" | python3 -m json.tool 2>/dev/null || cat
+echo

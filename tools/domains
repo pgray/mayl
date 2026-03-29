@@ -1,0 +1,4 @@
+#!/bin/bash
+# List all registered domains
+curl -s http://localhost:8080/domains | python3 -m json.tool 2>/dev/null || cat
+echo

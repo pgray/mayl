@@ -20,7 +20,7 @@ fi
 
 GPG_KEY_ID=$(gpg --list-keys --with-colons 2>/dev/null | grep '^pub' | head -1 | cut -d: -f5)
 
-if [ ! -d /root/.password-store ]; then
+if [ ! -f /root/.password-store/.gpg-id ]; then
     pass init "$GPG_KEY_ID"
 fi
 
@@ -35,8 +35,16 @@ fi
 eval "$(dbus-launch --sh-syntax)"
 export DBUS_SESSION_BUS_ADDRESS
 
-# Persist dbus session address for runit services
-echo "export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'" > /run/dbus-session-env
+# ── gnome-keyring (secret-service API for protonmail-bridge) ────────────────
+
+eval "$(gnome-keyring-daemon --start --components=secrets 2>/dev/null)" || true
+export GNOME_KEYRING_CONTROL
+
+# Persist session env for runit services
+cat > /run/dbus-session-env <<ENVEOF
+export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'
+export GNOME_KEYRING_CONTROL='$GNOME_KEYRING_CONTROL'
+ENVEOF
 
 # ── Hand off to runit ────────────────────────────────────────────────────────
 

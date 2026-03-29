@@ -1,6 +1,7 @@
 target/
 .git/
 vnccc/
+proton-bridge/
 *.db
 *.db-wal
 *.db-shm

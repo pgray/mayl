@@ -1,0 +1,17 @@
+#!/bin/bash
+# Send a test email
+# Usage: ./tools/send
+set -e
+
+read -rp "Token: " token
+read -rp "From: " from
+read -rp "To: " to
+read -rp "Subject: " subject
+read -rp "Body: " body
+
+curl -s -X POST "http://localhost:8080/email?sync=true" \
+  -H "Authorization: Bearer $token" \
+  -H "Content-Type: application/json" \
+  -d "$(printf '{"from":"%s","to":["%s"],"subject":"%s","body":"%s"}' "$from" "$to" "$subject" "$body")" \
+  | python3 -m json.tool 2>/dev/null || cat
+echo
