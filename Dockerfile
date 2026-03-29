@@ -44,19 +44,23 @@ RUN curl -sL https://proton.me/download/bridge/protonmail-bridge_3.16.0-1_amd64.
 
 FROM rust:1-slim-trixie AS builder
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
+COPY build.rs ./
+COPY proto ./proto
 COPY src ./src
 
-RUN cargo build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release && cp target/release/mayl /usr/local/bin/mayl
 
 # ── Stage 3: Final image ─────────────────────────────────────────────────────
 
 FROM runtime
 
-COPY --from=builder /app/target/release/mayl /usr/local/bin/mayl
+COPY --from=builder /usr/local/bin/mayl /usr/local/bin/mayl
 COPY entrypoint.sh /entrypoint.sh
 COPY sv/ /etc/sv/
 RUN chmod +x /entrypoint.sh \

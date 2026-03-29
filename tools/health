@@ -1,0 +1,4 @@
+#!/bin/bash
+# Show queue and archive stats
+curl -s http://localhost:8080/health | python3 -m json.tool 2>/dev/null || cat
+echo

@@ -1,0 +1,4 @@
+#!/bin/bash
+# Show bridge connection status, logged-in users, and SMTP config
+curl -s http://localhost:8080/bridge/status | python3 -m json.tool 2>/dev/null || cat
+echo

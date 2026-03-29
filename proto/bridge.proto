@@ -1,0 +1,589 @@
+// Copyright (c) 2022 Proton Technologies AG
+//
+// This file is part of ProtonMail Bridge.
+//
+// ProtonMail Bridge is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// ProtonMail Bridge is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with ProtonMail Bridge.  If not, see <https://www.gnu.org/licenses/>.
+
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+
+option go_package = "github.com/ProtonMail/proton-bridge/v3/internal/grpc";
+
+package grpc; // ignored by Go, used as namespace name in C++.
+
+//**********************************************************************************************************************
+//  Service Declaration
+//**********************************************************************************************************************≠––
+service Bridge {
+
+  // App related calls
+  rpc CheckTokens(google.protobuf.StringValue) returns (google.protobuf.StringValue);
+  rpc AddLogEntry(AddLogEntryRequest) returns (google.protobuf.Empty);
+  rpc GuiReady (google.protobuf.Empty) returns (GuiReadyResponse);
+  rpc Quit (google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc Restart (google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc ShowOnStartup(google.protobuf.Empty) returns (google.protobuf.BoolValue);
+  rpc SetIsAutostartOn(google.protobuf.BoolValue) returns (google.protobuf.Empty);
+  rpc IsAutostartOn(google.protobuf.Empty) returns (google.protobuf.BoolValue);
+  rpc SetIsBetaEnabled(google.protobuf.BoolValue) returns (google.protobuf.Empty);
+  rpc IsBetaEnabled(google.protobuf.Empty) returns (google.protobuf.BoolValue);
+  rpc SetIsAllMailVisible(google.protobuf.BoolValue) returns (google.protobuf.Empty);
+  rpc IsAllMailVisible(google.protobuf.Empty) returns (google.protobuf.BoolValue);
+  rpc SetIsTelemetryDisabled(google.protobuf.BoolValue) returns (google.protobuf.Empty);
+  rpc IsTelemetryDisabled(google.protobuf.Empty) returns (google.protobuf.BoolValue);
+  rpc GoOs(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc TriggerReset(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc Version(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc LogsPath(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc LicensePath(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc ReleaseNotesPageLink(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc DependencyLicensesLink(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc LandingPageLink(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc SetColorSchemeName(google.protobuf.StringValue) returns (google.protobuf.Empty);
+  rpc ColorSchemeName(google.protobuf.Empty) returns (google.protobuf.StringValue); // TODO Color scheme should probably entirely be managed by the client.
+  rpc CurrentEmailClient(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc ReportBug(ReportBugRequest) returns (google.protobuf.Empty);
+  rpc ForceLauncher(google.protobuf.StringValue) returns (google.protobuf.Empty);
+  rpc SetMainExecutable(google.protobuf.StringValue) returns (google.protobuf.Empty);
+  rpc RequestKnowledgeBaseSuggestions(google.protobuf.StringValue) returns (google.protobuf.Empty);
+
+  // login
+  rpc Login(LoginRequest) returns (google.protobuf.Empty);
+  rpc Login2FA(LoginRequest) returns (google.protobuf.Empty);
+  rpc LoginFido(LoginRequest) returns (google.protobuf.Empty);
+  rpc Login2Passwords(LoginRequest) returns (google.protobuf.Empty);
+  rpc LoginAbort(LoginAbortRequest) returns (google.protobuf.Empty);
+  rpc FidoAssertionAbort(LoginAbortRequest) returns (google.protobuf.Empty);
+
+  // update
+  rpc CheckUpdate(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc InstallUpdate(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc SetIsAutomaticUpdateOn(google.protobuf.BoolValue) returns (google.protobuf.Empty);
+  rpc IsAutomaticUpdateOn(google.protobuf.Empty) returns (google.protobuf.BoolValue);
+
+  // cache
+  rpc DiskCachePath(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc SetDiskCachePath(google.protobuf.StringValue) returns (google.protobuf.Empty);
+
+  // mail
+  rpc SetIsDoHEnabled(google.protobuf.BoolValue) returns (google.protobuf.Empty);
+  rpc IsDoHEnabled(google.protobuf.Empty) returns (google.protobuf.BoolValue);
+  rpc MailServerSettings(google.protobuf.Empty) returns (ImapSmtpSettings);
+  rpc SetMailServerSettings(ImapSmtpSettings) returns (google.protobuf.Empty);
+  rpc Hostname(google.protobuf.Empty) returns (google.protobuf.StringValue);
+  rpc IsPortFree(google.protobuf.Int32Value) returns (google.protobuf.BoolValue);
+
+  // keychain
+  rpc AvailableKeychains(google.protobuf.Empty) returns (AvailableKeychainsResponse);
+  rpc SetCurrentKeychain(google.protobuf.StringValue) returns (google.protobuf.Empty);
+  rpc CurrentKeychain(google.protobuf.Empty) returns (google.protobuf.StringValue);
+
+  // User & user list
+  rpc GetUserList(google.protobuf.Empty) returns (UserListResponse);
+  rpc GetUser(google.protobuf.StringValue) returns (User);
+  rpc SetUserSplitMode(UserSplitModeRequest) returns (google.protobuf.Empty);
+  rpc SendBadEventUserFeedback(UserBadEventFeedbackRequest) returns (google.protobuf.Empty);
+  rpc LogoutUser(google.protobuf.StringValue) returns (google.protobuf.Empty);
+  rpc RemoveUser(google.protobuf.StringValue) returns (google.protobuf.Empty);
+  rpc ConfigureUserAppleMail(ConfigureAppleMailRequest) returns (google.protobuf.Empty);
+
+  // TLS certificate related calls
+  rpc IsTLSCertificateInstalled(google.protobuf.Empty) returns (google.protobuf.BoolValue);
+  rpc InstallTLSCertificate(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc ExportTLSCertificates(google.protobuf.StringValue) returns (google.protobuf.Empty);
+
+  // Server -> Client event stream
+  rpc RunEventStream(EventStreamRequest) returns (stream StreamEvent); // Keep streaming until StopEventStream is called.
+  rpc StopEventStream(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+  // Repair
+  rpc TriggerRepair(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+//**********************************************************************************************************************
+//  RPC calls requests and replies messages
+//**********************************************************************************************************************
+
+//**********************************************************
+// Log related message
+//**********************************************************
+// Note: the enum values are prefixed with 'LOG_' to avoid a clash in C++ on Windows with the ERROR macro defined in wingdi.h
+enum LogLevel {
+  LOG_PANIC = 0;
+  LOG_FATAL = 1;
+  LOG_ERROR = 2;
+  LOG_WARN  = 3;
+  LOG_INFO  = 4;
+  LOG_DEBUG = 5;
+  LOG_TRACE = 6;
+}
+
+message AddLogEntryRequest {
+  LogLevel level = 1;
+  string package = 2; // package is Go lingo but it identifies the component responsible for the log entry
+  string message = 3;
+};
+
+
+//**********************************************************
+//  GuiReady
+//**********************************************************
+message GuiReadyResponse {
+  bool showSplashScreen = 1;
+}
+
+
+//**********************************************************
+//  Bug reporting related messages.
+//**********************************************************
+message ReportBugRequest {
+  string osType = 1;
+  string osVersion = 2;
+  string title = 3;
+  string description = 4;
+  string address = 5;
+  string emailClient = 6;
+  bool includeLogs = 7;
+
+}
+
+// login related messages
+//**********************************************************
+// Login related messages
+//**********************************************************
+
+message LoginRequest {
+  string username = 1;
+  bytes password = 2;
+  optional bool useHvDetails = 3;
+}
+
+message LoginAbortRequest {
+  string username = 1;
+}
+
+//**********************************************************
+// IMAP/SMTP Mail Server settings
+//**********************************************************
+message ImapSmtpSettings {
+  int32 imapPort = 1;
+  int32 smtpPort = 2;
+  bool useSSLForImap = 3;
+  bool useSSLForSmtp = 4;
+}
+
+//**********************************************************
+// Keychain related message
+//**********************************************************
+message AvailableKeychainsResponse {
+  repeated string keychains = 1;
+}
+
+//**********************************************************
+// user related messages
+//**********************************************************
+enum UserState {
+  SIGNED_OUT = 0;
+  LOCKED = 1;
+  CONNECTED = 2;
+}
+
+message User {
+  string id = 1;
+  string username = 2;
+  string avatarText = 3;
+  UserState state = 4;
+  bool splitMode = 5;
+  int64 usedBytes = 6;
+  int64 totalBytes = 7;
+  bytes password = 8;
+  repeated string addresses = 9;
+}
+
+message UserSplitModeRequest {
+  string userID = 1;
+  bool active = 2;
+}
+
+message UserBadEventFeedbackRequest {
+  string userID = 1;
+  bool doResync = 2;
+}
+
+
+message UserListResponse {
+  repeated User users = 1;
+}
+
+message ConfigureAppleMailRequest {
+  string userID = 1;
+  string address = 2;
+}
+
+//**********************************************************************************************************************
+//  Event stream messages
+//**********************************************************************************************************************
+
+message EventStreamRequest {
+  string ClientPlatform = 1;
+}
+
+message StreamEvent {
+  oneof event {
+    AppEvent app = 1;
+    LoginEvent login = 2;
+    UpdateEvent update = 3;
+    DiskCacheEvent cache = 4;
+    MailServerSettingsEvent mailServerSettings = 5;
+    KeychainEvent keychain = 6;
+    MailEvent mail = 7;
+    UserEvent user = 8;
+    GenericErrorEvent genericError = 9;
+  }
+}
+
+//**********************************************************
+// App related events
+//**********************************************************
+message AppEvent {
+  oneof event {
+    InternetStatusEvent internetStatus = 1;
+    ToggleAutostartFinishedEvent toggleAutostartFinished = 2;
+    ResetFinishedEvent resetFinished = 3;
+    ReportBugFinishedEvent reportBugFinished = 4;
+    ReportBugSuccessEvent reportBugSuccess = 5;
+    ReportBugErrorEvent reportBugError = 6;
+    ShowMainWindowEvent showMainWindow = 7;
+    ReportBugFallbackEvent reportBugFallback = 8;
+    CertificateInstallSuccessEvent certificateInstallSuccess = 9;
+    CertificateInstallCanceledEvent certificateInstallCanceled = 10;
+    CertificateInstallFailedEvent certificateInstallFailed = 11;
+    KnowledgeBaseSuggestionsEvent knowledgeBaseSuggestions = 12;
+    RepairStartedEvent repairStarted = 13;
+    AllUsersLoadedEvent allUsersLoaded = 14;
+    UserNotificationEvent userNotification = 15;
+  }
+}
+
+message InternetStatusEvent {
+  bool connected = 1;
+}
+
+message ToggleAutostartFinishedEvent {}
+message ResetFinishedEvent {}
+message ReportBugFinishedEvent {}
+message ReportBugSuccessEvent {}
+message ReportBugErrorEvent {}
+message ShowMainWindowEvent {}
+message ReportBugFallbackEvent {}
+message CertificateInstallSuccessEvent {}
+message CertificateInstallCanceledEvent {}
+message CertificateInstallFailedEvent {}
+message RepairStartedEvent {}
+message AllUsersLoadedEvent {}
+
+message KnowledgeBaseSuggestion {
+  string url = 1;
+  string title = 2;
+}
+
+message KnowledgeBaseSuggestionsEvent {
+  repeated KnowledgeBaseSuggestion suggestions = 1;
+}
+
+//**********************************************************
+// Login related events
+//**********************************************************
+message LoginEvent {
+  oneof event {
+    LoginErrorEvent error = 1;
+    LoginTfaRequestedEvent tfaRequested = 2;
+    LoginTwoPasswordsRequestedEvent twoPasswordRequested = 3;
+    LoginFinishedEvent finished = 4;
+    LoginFinishedEvent alreadyLoggedIn = 5;
+    LoginHvRequestedEvent hvRequested = 6;
+    LoginFidoRequestedEvent fidoRequested = 7;
+    LoginTfaOrFidoRequestedEvent tfaOrFidoRequested = 8;
+    LoginFidoTouchEvent loginFidoTouchRequested = 9;
+    LoginFidoTouchEvent loginFidoTouchCompleted = 10;
+    LoginFidoPinRequired loginFidoPinRequired = 11;
+  }
+}
+
+enum LoginErrorType {
+  USERNAME_PASSWORD_ERROR = 0;
+  FREE_USER = 1;
+  CONNECTION_ERROR = 2;
+  TFA_ERROR = 3;
+  TFA_ABORT = 4;
+  TWO_PASSWORDS_ERROR = 5;
+  TWO_PASSWORDS_ABORT = 6;
+  HV_ERROR = 7;
+  FIDO_PIN_INVALID = 8;
+  FIDO_PIN_BLOCKED = 9;
+  FIDO_ERROR = 10;
+}
+
+message LoginErrorEvent {
+  LoginErrorType type = 1;
+  string message = 2;
+}
+
+message LoginTfaRequestedEvent {
+  string username = 1;
+}
+
+message LoginFidoRequestedEvent {
+  string username = 1;
+}
+
+message LoginTfaOrFidoRequestedEvent {
+  string username = 1;
+}
+
+message LoginFidoTouchEvent {
+  string username = 1;
+}
+
+message LoginFidoPinRequired {
+  string username = 1;
+}
+
+message LoginTwoPasswordsRequestedEvent {
+  string username = 1;
+}
+
+message LoginFinishedEvent {
+  string userID = 1;
+  bool wasSignedOut = 2;
+}
+
+message LoginHvRequestedEvent {
+  string hvUrl = 1;
+}
+
+//**********************************************************
+// Update related events
+//**********************************************************
+message UpdateEvent {
+  oneof event {
+    UpdateErrorEvent error = 1;
+    UpdateManualReadyEvent manualReady = 2;
+    UpdateManualRestartNeededEvent manualRestartNeeded = 3;
+    UpdateForceEvent force = 4;
+    UpdateSilentRestartNeeded silentRestartNeeded = 5;
+    UpdateIsLatestVersion isLatestVersion = 6;
+    UpdateCheckFinished checkFinished = 7;
+    UpdateVersionChanged versionChanged = 8;
+  }
+}
+
+enum UpdateErrorType {
+  UPDATE_MANUAL_ERROR = 0;
+  UPDATE_FORCE_ERROR = 1;
+  UPDATE_SILENT_ERROR = 2;
+}
+
+message UpdateErrorEvent {
+  UpdateErrorType type = 1;
+}
+
+message UpdateManualReadyEvent {
+  string version = 1;
+}
+
+message UpdateManualRestartNeededEvent {};
+
+message UpdateForceEvent {
+  string version = 1;
+}
+
+message UpdateSilentRestartNeeded {}
+
+message UpdateIsLatestVersion {}
+
+message UpdateCheckFinished {}
+
+message UpdateVersionChanged {}
+
+
+//**********************************************************
+// Cache on disk related events
+//**********************************************************
+message DiskCacheEvent {
+  oneof event {
+    DiskCacheErrorEvent error = 1;
+    DiskCachePathChangedEvent pathChanged = 2;
+    DiskCachePathChangeFinishedEvent pathChangeFinished  = 3;
+  }
+}
+
+enum DiskCacheErrorType {
+  CANT_MOVE_DISK_CACHE_ERROR = 0;
+};
+
+message DiskCacheErrorEvent {
+  DiskCacheErrorType type = 1;
+}
+
+message DiskCachePathChangedEvent {
+  string path = 1;
+}
+
+message DiskCachePathChangeFinishedEvent {}
+
+
+
+//**********************************************************
+// Mail server settings related events
+//**********************************************************
+message MailServerSettingsEvent {
+  oneof event {
+    MailServerSettingsErrorEvent error = 1;
+    MailServerSettingsChangedEvent mailServerSettingsChanged = 2;
+    ChangeMailServerSettingsFinishedEvent changeMailServerSettingsFinished = 3;
+  }
+}
+
+enum MailServerSettingsErrorType {
+  IMAP_PORT_STARTUP_ERROR = 0;
+  SMTP_PORT_STARTUP_ERROR = 1;
+  IMAP_PORT_CHANGE_ERROR = 2;
+  SMTP_PORT_CHANGE_ERROR = 3;
+  IMAP_CONNECTION_MODE_CHANGE_ERROR = 4;
+  SMTP_CONNECTION_MODE_CHANGE_ERROR = 5;
+}
+
+message MailServerSettingsErrorEvent {  MailServerSettingsErrorType type = 1; }
+message MailServerSettingsChangedEvent { ImapSmtpSettings settings = 1; }
+message ChangeMailServerSettingsFinishedEvent {}
+
+//**********************************************************
+// keychain related events
+//**********************************************************
+message KeychainEvent {
+  oneof event {
+    ChangeKeychainFinishedEvent changeKeychainFinished = 1;
+    HasNoKeychainEvent hasNoKeychain = 2;
+    RebuildKeychainEvent rebuildKeychain = 3;
+  }
+}
+
+message ChangeKeychainFinishedEvent {}
+message HasNoKeychainEvent {}
+message RebuildKeychainEvent {}
+
+//**********************************************************
+// Mail related events
+//**********************************************************
+message MailEvent {
+  oneof event {
+    AddressChangedEvent addressChanged = 1;
+    AddressChangedLogoutEvent addressChangedLogout = 2;
+    ApiCertIssueEvent apiCertIssue = 3;
+  }
+}
+
+message AddressChangedEvent {
+  string address = 1;
+}
+
+message AddressChangedLogoutEvent {
+  string address = 1;
+}
+
+message ApiCertIssueEvent {}
+
+//**********************************************************
+// User list related event
+//**********************************************************
+
+message UserEvent {
+  oneof event {
+    ToggleSplitModeFinishedEvent toggleSplitModeFinished= 1;
+    UserDisconnectedEvent userDisconnected = 2;
+    UserChangedEvent userChanged = 3;
+    UserBadEvent userBadEvent = 4;
+    UsedBytesChangedEvent  usedBytesChangedEvent = 5;
+    ImapLoginFailedEvent imapLoginFailedEvent = 6;
+    SyncStartedEvent syncStartedEvent = 7;
+    SyncFinishedEvent syncFinishedEvent = 8;
+    SyncProgressEvent syncProgressEvent = 9;
+  }
+}
+
+
+message ToggleSplitModeFinishedEvent {
+  string userID = 1;
+}
+
+message UserDisconnectedEvent {
+  string username = 1;
+}
+
+message UserChangedEvent {
+  string userID = 1;
+}
+
+message UserBadEvent {
+  string userID = 1;
+  string errorMessage = 2;
+}
+
+message UsedBytesChangedEvent {
+  string userID = 1;
+  int64 usedBytes = 2;
+}
+
+message ImapLoginFailedEvent {
+  string username = 1;
+}
+
+message SyncStartedEvent {
+  string userID = 1;
+}
+
+message SyncFinishedEvent {
+  string userID = 1;
+}
+
+message SyncProgressEvent {
+  string userID = 1;
+  double progress = 2;
+  int64 elapsedMs = 3;
+  int64 remainingMs = 4;
+}
+
+message UserNotificationEvent {
+  string title = 1;
+  string subtitle = 2;
+  string body = 3;
+  string userID = 4;
+}
+
+
+//**********************************************************
+// Generic errors
+//**********************************************************
+enum ErrorCode {
+  UNKNOWN_ERROR = 0;
+  TLS_CERT_EXPORT_ERROR = 1;
+  TLS_KEY_EXPORT_ERROR = 2;
+}
+
+message GenericErrorEvent {
+  ErrorCode code = 1;
+}

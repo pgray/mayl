@@ -2,5 +2,6 @@
 export MAYL_SMTP_HOST="${MAYL_SMTP_HOST:-localhost}"
 export MAYL_SMTP_PORT="${MAYL_SMTP_PORT:-1025}"
 export MAYL_DB_PATH="${MAYL_DB_PATH:-/data/mayl.db}"
+export MAYL_BRIDGE_CONFIG_DIR="${MAYL_BRIDGE_CONFIG_DIR:-/root/.config/protonmail/bridge-v3}"
 
 exec mayl

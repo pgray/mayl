@@ -16,9 +16,13 @@ use lettre::{
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use maud::{DOCTYPE, html};
-use tracing::{error, info, warn};
+use tracing::{error, info, warn, debug};
+
+mod bridge_grpc {
+    tonic::include_proto!("grpc");
+}
 
 type QueueRow = (String, String, String, String, String, Option<String>, bool);
 
@@ -46,6 +50,7 @@ struct Config {
     archive_cull_interval_seconds: u64,
     db_path: String,
     seed_domains: Vec<String>,
+    bridge_config_dir: String,
 }
 
 impl Config {
@@ -67,6 +72,7 @@ impl Config {
             archive_cull_interval_seconds: env_parse("MAYL_ARCHIVE_CULL_INTERVAL_SECONDS", 600),
             db_path: env_or("MAYL_DB_PATH", "mayl.db"),
             seed_domains,
+            bridge_config_dir: env_or("MAYL_BRIDGE_CONFIG_DIR", ""),
         }
     }
 }
@@ -146,6 +152,350 @@ struct AppState {
     db: Mutex<Connection>,
     config: Config,
     smtp_creds: RwLock<SmtpCredentials>,
+    bridge: Option<BridgeHandle>,
+}
+
+// ── Bridge gRPC ────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct NoVerify;
+
+impl rustls::client::danger::ServerCertVerifier for NoVerify {
+    fn verify_server_cert(
+        &self,
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &[rustls::pki_types::CertificateDer<'_>],
+        _: &rustls::pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeGrpcConfig {
+    #[allow(dead_code)]
+    port: i32,
+    #[allow(dead_code)]
+    cert: String,
+    token: String,
+    #[serde(rename = "fileSocketPath")]
+    file_socket_path: String,
+}
+
+#[derive(Debug, Clone)]
+enum BridgeLoginEvent {
+    TfaRequested,
+    TwoPasswordsRequested,
+    Finished { user_id: String },
+    AlreadyLoggedIn { user_id: String },
+    Error { message: String },
+}
+
+struct BridgeHandle {
+    client: Mutex<bridge_grpc::bridge_client::BridgeClient<tonic::transport::Channel>>,
+    token: String,
+    login_events_tx: broadcast::Sender<BridgeLoginEvent>,
+}
+
+// POST /bridge/unlock — all credentials via headers:
+//   BRIDGE-USERNAME: user@proton.me
+//   BRIDGE-LOGIN-PW: login password
+//   BRIDGE-UNLOCK-PW: mailbox password (optional, two-password mode)
+//   BRIDGE-TOTP: 123456 (optional, 2FA)
+
+#[derive(Debug, Serialize)]
+struct BridgeUnlockResponse {
+    status: String,
+    user_id: String,
+    addresses: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BridgeStatusUser {
+    id: String,
+    username: String,
+    state: String,
+    addresses: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BridgeStatusSmtp {
+    host: String,
+    port: i32,
+    ssl: bool,
+    user: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BridgeStatusResponse {
+    connected: bool,
+    version: String,
+    users: Vec<BridgeStatusUser>,
+    smtp: BridgeStatusSmtp,
+}
+
+type BridgeClient = bridge_grpc::bridge_client::BridgeClient<tonic::transport::Channel>;
+
+async fn connect_bridge(config_dir: &str) -> Result<(BridgeClient, String), String> {
+    let config_path = format!("{}/grpcServerConfig.json", config_dir);
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let tls_config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerify))
+        .with_no_client_auth();
+    let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
+
+    // Retry both config read AND connection — config may be stale from a previous run
+    let mut attempts = 0;
+    let (client, token) = loop {
+        attempts += 1;
+
+        let grpc_config: BridgeGrpcConfig = match std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|data| serde_json::from_str(&data).ok())
+        {
+            Some(c) => c,
+            None => {
+                if attempts > 60 {
+                    return Err("bridge grpcServerConfig.json not found".into());
+                }
+                debug!(attempt = attempts, "waiting for bridge gRPC config...");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+
+        let socket_path = grpc_config.file_socket_path.clone();
+        let tls = tls_connector.clone();
+
+        let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
+            .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+                let path = socket_path.clone();
+                let tls = tls.clone();
+                async move {
+                    let stream = tokio::net::UnixStream::connect(path).await?;
+                    let server_name = rustls::pki_types::ServerName::try_from("127.0.0.1")
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    let tls_stream = tls.connect(server_name, stream).await?;
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(tls_stream))
+                }
+            }))
+            .await;
+
+        match channel {
+            Ok(ch) => {
+                info!(socket = %grpc_config.file_socket_path, "connected to bridge gRPC");
+                break (
+                    bridge_grpc::bridge_client::BridgeClient::new(ch),
+                    grpc_config.token,
+                );
+            }
+            Err(e) => {
+                if attempts > 60 {
+                    return Err(format!("bridge gRPC connect failed after retries: {e}"));
+                }
+                debug!(attempt = attempts, err = %e, "bridge gRPC not ready, retrying...");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    };
+
+    Ok((client, token))
+}
+
+fn bridge_request<T>(token: &str, inner: T) -> tonic::Request<T> {
+    let mut req = tonic::Request::new(inner);
+    if let Ok(val) = token.parse() {
+        req.metadata_mut().insert("server-token", val);
+    }
+    req
+}
+
+async fn harvest_smtp_creds(
+    client: &mut BridgeClient,
+    token: &str,
+    state: &AppState,
+) -> Result<(), String> {
+    let users_resp = client
+        .get_user_list(bridge_request(token, ()))
+        .await
+        .map_err(|e| format!("get_user_list: {e}"))?;
+
+    let users = &users_resp.get_ref().users;
+    let connected_user = users
+        .iter()
+        .find(|u| u.state == bridge_grpc::UserState::Connected as i32);
+
+    let Some(user) = connected_user else {
+        return Err("no connected user found".into());
+    };
+
+    let smtp_user = user.addresses.first().cloned().unwrap_or_default();
+    let smtp_pass = String::from_utf8(user.password.clone())
+        .map_err(|e| format!("bridge password decode: {e}"))?;
+
+    let settings = client
+        .mail_server_settings(bridge_request(token, ()))
+        .await
+        .map_err(|e| format!("mail_server_settings: {e}"))?;
+    let settings = settings.get_ref();
+
+    // Update SMTP creds
+    {
+        let mut creds = state.smtp_creds.write().await;
+        creds.user = smtp_user.clone();
+        creds.pass = smtp_pass.clone();
+    }
+
+    // Persist to DB
+    {
+        let db = state.db.lock().await;
+        let _ = db.execute(
+            "INSERT INTO config (key, value) VALUES ('smtp_user', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [&smtp_user],
+        );
+        let _ = db.execute(
+            "INSERT INTO config (key, value) VALUES ('smtp_pass', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [&smtp_pass],
+        );
+    }
+
+    info!(
+        user = %smtp_user,
+        port = settings.smtp_port,
+        "SMTP credentials harvested from bridge"
+    );
+
+    Ok(())
+}
+
+async fn bridge_event_worker(state: Arc<AppState>, mut client: BridgeClient, token: String) {
+    use bridge_grpc::stream_event::Event;
+    use bridge_grpc::login_event::Event as LoginEvt;
+
+    // Call GuiReady first
+    if let Err(e) = client.gui_ready(bridge_request(&token, ())).await {
+        error!("bridge GuiReady failed: {e}");
+        return;
+    }
+    info!("bridge gRPC: GuiReady sent");
+
+    // Try to harvest existing creds (user may already be logged in)
+    match harvest_smtp_creds(&mut client, &token, &state).await {
+        Ok(()) => info!("bridge: existing user credentials loaded"),
+        Err(e) => debug!("bridge: no existing user to harvest: {e}"),
+    }
+
+    // Start event stream
+    let stream_req = bridge_grpc::EventStreamRequest {
+        client_platform: "mayl".into(),
+    };
+    let mut stream = match client
+        .run_event_stream(bridge_request(&token, stream_req))
+        .await
+    {
+        Ok(resp) => resp.into_inner(),
+        Err(e) => {
+            error!("bridge RunEventStream failed: {e}");
+            return;
+        }
+    };
+
+    info!("bridge gRPC: event stream started");
+
+    let login_tx = state
+        .bridge
+        .as_ref()
+        .map(|b| b.login_events_tx.clone());
+
+    loop {
+        use tokio_stream::StreamExt;
+        match stream.next().await {
+            Some(Ok(event)) => {
+                let Some(ref ev) = event.event else { continue };
+                match ev {
+                    Event::Login(login_event) => {
+                        let Some(ref le) = login_event.event else { continue };
+                        let bridge_event = match le {
+                            LoginEvt::TfaRequested(_) | LoginEvt::TfaOrFidoRequested(_) => {
+                                debug!("bridge: 2FA requested");
+                                BridgeLoginEvent::TfaRequested
+                            }
+                            LoginEvt::TwoPasswordRequested(_) => {
+                                debug!("bridge: two-password requested");
+                                BridgeLoginEvent::TwoPasswordsRequested
+                            }
+                            LoginEvt::Finished(f) => {
+                                info!(user_id = %f.user_id, "bridge: login finished");
+                                BridgeLoginEvent::Finished {
+                                    user_id: f.user_id.clone(),
+                                }
+                            }
+                            LoginEvt::AlreadyLoggedIn(f) => {
+                                info!(user_id = %f.user_id, "bridge: already logged in");
+                                BridgeLoginEvent::AlreadyLoggedIn {
+                                    user_id: f.user_id.clone(),
+                                }
+                            }
+                            LoginEvt::Error(e) => {
+                                warn!(msg = %e.message, "bridge: login error");
+                                BridgeLoginEvent::Error {
+                                    message: e.message.clone(),
+                                }
+                            }
+                            _ => continue,
+                        };
+                        if let Some(ref tx) = login_tx {
+                            let _ = tx.send(bridge_event);
+                        }
+                    }
+                    Event::User(_) => {
+                        // User changed — try to refresh SMTP creds
+                        let mut c = state.bridge.as_ref().unwrap().client.lock().await;
+                        let _ = harvest_smtp_creds(&mut c, &token, &state).await;
+                    }
+                    _ => {}
+                }
+            }
+            Some(Err(e)) => {
+                error!("bridge event stream error: {e}");
+                break;
+            }
+            None => {
+                warn!("bridge event stream ended");
+                break;
+            }
+        }
+    }
 }
 
 // ── Database ────────────────────────────────────────────────────────────────
@@ -657,6 +1007,296 @@ async fn set_smtp_handler(
     ))
 }
 
+// ── Bridge Handlers ────────────────────────────────────────────────────────
+
+async fn bridge_unlock_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<BridgeUnlockResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let bridge = state.bridge.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "bridge gRPC not configured".into(),
+            }),
+        )
+    })?;
+
+    let header_str = |name: &str| -> Option<String> {
+        headers.get(name).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+    };
+
+    let username = header_str("bridge-username").ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "missing BRIDGE-USERNAME header".into(),
+            }),
+        )
+    })?;
+
+    let login_pw = header_str("bridge-login-pw").ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "missing BRIDGE-LOGIN-PW header".into(),
+            }),
+        )
+    })?;
+
+    let unlock_pw = header_str("bridge-unlock-pw");
+    let totp = header_str("bridge-totp");
+
+    let token = &bridge.token;
+
+    // Subscribe to login events before triggering login
+    let mut login_rx = bridge.login_events_tx.subscribe();
+
+    // Send Login request
+    {
+        use base64::Engine;
+        let pw_b64 = base64::engine::general_purpose::STANDARD.encode(login_pw.as_bytes());
+        let login_req = bridge_grpc::LoginRequest {
+            username: username.clone(),
+            password: pw_b64.into_bytes(),
+            use_hv_details: None,
+        };
+        let mut client = bridge.client.lock().await;
+        client
+            .login(bridge_request(token, login_req))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: format!("bridge login RPC: {e}"),
+                    }),
+                )
+            })?;
+    }
+
+    // Wait for login events with timeout
+    let timeout = Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let event = tokio::time::timeout_at(deadline, login_rx.recv())
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    Json(ErrorResponse {
+                        error: "bridge login timed out".into(),
+                    }),
+                )
+            })?
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "login event channel closed".into(),
+                    }),
+                )
+            })?;
+
+        match event {
+            BridgeLoginEvent::TfaRequested => {
+                let Some(ref totp_code) = totp else {
+                    // Abort login since we can't provide TOTP
+                    let mut client = bridge.client.lock().await;
+                    let _ = client
+                        .login_abort(bridge_request(
+                            token,
+                            bridge_grpc::LoginAbortRequest {
+                                username: username.clone(),
+                            },
+                        ))
+                        .await;
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: "2FA required but no totp provided".into(),
+                        }),
+                    ));
+                };
+                use base64::Engine;
+                let totp_b64 =
+                    base64::engine::general_purpose::STANDARD.encode(totp_code.as_bytes());
+                let mut client = bridge.client.lock().await;
+                client
+                    .login2_fa(bridge_request(
+                        token,
+                        bridge_grpc::LoginRequest {
+                            username: username.clone(),
+                            password: totp_b64.into_bytes(),
+                            use_hv_details: None,
+                        },
+                    ))
+                    .await
+                    .map_err(|e| {
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            Json(ErrorResponse {
+                                error: format!("bridge 2FA RPC: {e}"),
+                            }),
+                        )
+                    })?;
+                // Continue waiting for next event
+            }
+            BridgeLoginEvent::TwoPasswordsRequested => {
+                let Some(ref mailbox_pw) = unlock_pw else {
+                    let mut client = bridge.client.lock().await;
+                    let _ = client
+                        .login_abort(bridge_request(
+                            token,
+                            bridge_grpc::LoginAbortRequest {
+                                username: username.clone(),
+                            },
+                        ))
+                        .await;
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: "mailbox password required but no BRIDGE-UNLOCK-PW header"
+                                .into(),
+                        }),
+                    ));
+                };
+                use base64::Engine;
+                let pw_b64 =
+                    base64::engine::general_purpose::STANDARD.encode(mailbox_pw.as_bytes());
+                let mut client = bridge.client.lock().await;
+                client
+                    .login2_passwords(bridge_request(
+                        token,
+                        bridge_grpc::LoginRequest {
+                            username: username.clone(),
+                            password: pw_b64.into_bytes(),
+                            use_hv_details: None,
+                        },
+                    ))
+                    .await
+                    .map_err(|e| {
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            Json(ErrorResponse {
+                                error: format!("bridge 2passwords RPC: {e}"),
+                            }),
+                        )
+                    })?;
+                // Continue waiting for next event
+            }
+            BridgeLoginEvent::Finished { user_id } | BridgeLoginEvent::AlreadyLoggedIn { user_id } => {
+                // Harvest SMTP creds
+                let mut client = bridge.client.lock().await;
+                let _ = harvest_smtp_creds(&mut client, token, &state).await;
+
+                // Get user addresses for response
+                let addresses = match client
+                    .get_user_list(bridge_request(token, ()))
+                    .await
+                {
+                    Ok(resp) => resp
+                        .get_ref()
+                        .users
+                        .iter()
+                        .find(|u| u.id == user_id)
+                        .map(|u| u.addresses.clone())
+                        .unwrap_or_default(),
+                    Err(_) => vec![],
+                };
+
+                return Ok(Json(BridgeUnlockResponse {
+                    status: "ok".into(),
+                    user_id,
+                    addresses,
+                }));
+            }
+            BridgeLoginEvent::Error { message } => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(ErrorResponse {
+                        error: format!("bridge login failed: {message}"),
+                    }),
+                ));
+            }
+        }
+    }
+}
+
+async fn bridge_status_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<BridgeStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let bridge = state.bridge.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "bridge gRPC not configured".into(),
+            }),
+        )
+    })?;
+
+    let token = &bridge.token;
+    let mut client = bridge.client.lock().await;
+
+    let version = client
+        .version(bridge_request(token, ()))
+        .await
+        .map(|r| r.into_inner())
+        .unwrap_or_else(|_| "unknown".into());
+
+    let users = client
+        .get_user_list(bridge_request(token, ()))
+        .await
+        .map(|r| {
+            r.into_inner()
+                .users
+                .into_iter()
+                .map(|u| BridgeStatusUser {
+                    id: u.id,
+                    username: u.username,
+                    state: match u.state {
+                        0 => "SIGNED_OUT",
+                        1 => "LOCKED",
+                        2 => "CONNECTED",
+                        _ => "UNKNOWN",
+                    }
+                    .into(),
+                    addresses: u.addresses,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let settings = client
+        .mail_server_settings(bridge_request(token, ()))
+        .await
+        .ok();
+
+    let smtp_user = {
+        let creds = state.smtp_creds.read().await;
+        creds.user.clone()
+    };
+
+    Ok(Json(BridgeStatusResponse {
+        connected: true,
+        version,
+        users,
+        smtp: BridgeStatusSmtp {
+            host: state.config.smtp_host.clone(),
+            port: settings
+                .as_ref()
+                .map(|s| s.get_ref().smtp_port)
+                .unwrap_or(state.config.smtp_port as i32),
+            ssl: settings
+                .as_ref()
+                .map(|s| s.get_ref().use_ssl_for_smtp)
+                .unwrap_or(false),
+            user: smtp_user,
+        },
+    }))
+}
+
 // ── Email Handler ───────────────────────────────────────────────────────────
 
 async fn email_handler(
@@ -986,6 +1626,36 @@ async fn main() {
 
     let bind_addr = format!("{}:{}", config.server_host, config.server_port);
 
+    // Connect to bridge gRPC if configured
+    let bridge_handle = if !config.bridge_config_dir.is_empty() {
+        info!(dir = %config.bridge_config_dir, "bridge gRPC enabled, connecting...");
+        match connect_bridge(&config.bridge_config_dir).await {
+            Ok((client, token)) => {
+                let (login_tx, _) = broadcast::channel(16);
+                Some((
+                    BridgeHandle {
+                        client: Mutex::new(client.clone()),
+                        token: token.clone(),
+                        login_events_tx: login_tx,
+                    },
+                    client,
+                    token,
+                ))
+            }
+            Err(e) => {
+                error!("bridge gRPC connection failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let (bridge, event_client, event_token) = match bridge_handle {
+        Some((handle, client, token)) => (Some(handle), Some(client), Some(token)),
+        None => (None, None, None),
+    };
+
     let state = Arc::new(AppState {
         db: Mutex::new(conn),
         config,
@@ -993,10 +1663,16 @@ async fn main() {
             user: smtp_user,
             pass: smtp_pass,
         }),
+        bridge,
     });
 
     tokio::spawn(queue_worker(Arc::clone(&state)));
     tokio::spawn(archive_culler(Arc::clone(&state)));
+
+    // Start bridge event worker if connected
+    if let (Some(client), Some(token)) = (event_client, event_token) {
+        tokio::spawn(bridge_event_worker(Arc::clone(&state), client, token));
+    }
 
     let app = Router::new()
         .route("/", get(index_handler))
@@ -1007,6 +1683,8 @@ async fn main() {
         .route("/smtp", get(get_smtp_handler))
         .route("/smtp", post(set_smtp_handler))
         .route("/email", post(email_handler))
+        .route("/bridge/unlock", post(bridge_unlock_handler))
+        .route("/bridge/status", get(bridge_status_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)

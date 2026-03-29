@@ -1,0 +1,12 @@
+#!/bin/bash
+# Register a sending domain and get its API token
+# Usage: ./tools/add-domain example.com
+set -e
+
+domain="${1:?Usage: ./tools/add-domain <domain>}"
+
+curl -s -X POST http://localhost:8080/domains \
+  -H "Content-Type: application/json" \
+  -d "{\"domain\":\"$domain\"}" \
+  | python3 -m json.tool 2>/dev/null || cat
+echo
